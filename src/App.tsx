@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { User } from 'firebase/auth';
 import {
   BillboardSite,
   PhotoSlot,
@@ -10,6 +11,19 @@ import {
   PRESET_OBSERVATIONS,
   SYSTEM_CONSTANTS
 } from './data/inventory';
+import {
+  initAuth,
+  googleSignIn,
+  googleLogout,
+  getAccessToken
+} from './services/googleAuth';
+import {
+  listDriveFiles,
+  createDriveReportDocument,
+  calculateNextDriveSequence,
+  deleteDriveFile,
+  DriveFileItem
+} from './services/googleDrive';
 import {
   CheckCircle2,
   AlertCircle,
@@ -23,23 +37,33 @@ import {
   Plus,
   Trash2,
   UploadCloud,
-  RefreshCw,
   Search,
   Check,
-  Building2,
   Copy,
-  Download,
-  Eye,
-  SlidersHorizontal,
+  Layers,
+  Sparkles,
   ArrowRight,
   ArrowLeft,
-  Layers,
-  Sparkles
+  Cloud,
+  CloudCheck,
+  LogOut,
+  RefreshCw
 } from 'lucide-react';
 
 export default function App() {
   // Current screen state
   const [currentScreen, setCurrentScreen] = useState<ScreenId>('screen-dashboard');
+
+  // Google Auth & Drive state
+  const [user, setUser] = useState<User | null>(null);
+  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [isSigningIn, setIsSigningIn] = useState<boolean>(false);
+  const [driveFiles, setDriveFiles] = useState<DriveFileItem[]>([]);
+  const [isLoadingDriveFiles, setIsLoadingDriveFiles] = useState<boolean>(false);
+  const [isDriveModalOpen, setIsDriveModalOpen] = useState<boolean>(false);
+  const [driveSearch, setDriveSearch] = useState<string>('');
+  const [deleteConfirmationFile, setDeleteConfirmationFile] = useState<DriveFileItem | null>(null);
+  const [driveSuccessMessage, setDriveSuccessMessage] = useState<string | null>(null);
 
   // Site metadata state
   const [siteInput, setSiteInput] = useState<string>('AGT-092');
@@ -96,6 +120,7 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [generationStep, setGenerationStep] = useState<number>(1);
   const [generatedFilename, setGeneratedFilename] = useState<string>('AGT-092-001.gslides');
+  const [savedDriveFile, setSavedDriveFile] = useState<DriveFileItem | null>(null);
 
   // Slide preview page state in Screen 4
   const [activeSlidePage, setActiveSlidePage] = useState<1 | 2>(1);
@@ -104,18 +129,80 @@ export default function App() {
   const [isInventoryModalOpen, setIsInventoryModalOpen] = useState<boolean>(false);
   const [inventorySearch, setInventorySearch] = useState<string>('');
 
-  // QA test running simulation
-  const [qaPassed, setQaPassed] = useState<boolean>(true);
   const [copyNotice, setCopyNotice] = useState<string | null>(null);
-
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Helper: Count filled photos
+  // Count filled photos
   const filledPhotosCount = photos.filter((p): p is PhotoSlot => p !== null).length;
   const page1Count = photos.slice(0, 4).filter(Boolean).length;
   const page2Count = photos.slice(4, 8).filter(Boolean).length;
 
-  // Handle Site Lookup (F02)
+  // Initialize Firebase Auth listener on mount
+  useEffect(() => {
+    const unsubscribe = initAuth(
+      (authedUser, token) => {
+        setUser(authedUser);
+        setAccessToken(token);
+        fetchDriveReports(token);
+      },
+      () => {
+        setUser(null);
+        setAccessToken(null);
+        setDriveFiles([]);
+      }
+    );
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
+  // Fetch reports from Google Drive
+  const fetchDriveReports = async (token?: string) => {
+    const activeToken = token || accessToken;
+    if (!activeToken) return;
+
+    setIsLoadingDriveFiles(true);
+    try {
+      const files = await listDriveFiles(activeToken, {
+        pageSize: 30
+      });
+      setDriveFiles(files);
+    } catch (err) {
+      console.warn('Could not fetch drive files:', err);
+    } finally {
+      setIsLoadingDriveFiles(false);
+    }
+  };
+
+  // Google Sign In handler
+  const handleGoogleSignIn = async () => {
+    setIsSigningIn(true);
+    try {
+      const res = await googleSignIn();
+      if (res) {
+        setUser(res.user);
+        setAccessToken(res.accessToken);
+        fetchDriveReports(res.accessToken);
+        setDriveSuccessMessage(`Connected to Google Drive as ${res.user.email}`);
+        setTimeout(() => setDriveSuccessMessage(null), 4000);
+      }
+    } catch (err: any) {
+      console.error('Sign-in failed:', err);
+      alert(`Google Sign-In failed: ${err.message || 'Please check popup settings and try again.'}`);
+    } finally {
+      setIsSigningIn(false);
+    }
+  };
+
+  // Google Logout handler
+  const handleGoogleLogout = async () => {
+    await googleLogout();
+    setUser(null);
+    setAccessToken(null);
+    setDriveFiles([]);
+  };
+
+  // Site Lookup Handler (F02)
   const handleSiteLookup = (targetSiteNo?: string) => {
     const query = (targetSiteNo || siteInput).trim().toUpperCase();
     if (!query) return;
@@ -134,7 +221,6 @@ export default function App() {
     }
   };
 
-  // Quick lookup helper
   const setAndLookup = (siteNo: string) => {
     setSiteInput(siteNo);
     handleSiteLookup(siteNo);
@@ -144,7 +230,6 @@ export default function App() {
   const handleFilesChosen = (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
     const incomingFiles = Array.from(fileList).filter((f) => f.type.startsWith('image/'));
-
     if (incomingFiles.length === 0) return;
 
     if (incomingFiles.length > 8) {
@@ -158,7 +243,6 @@ export default function App() {
 
     filesToKeep.forEach((file, i) => {
       const objectUrl = URL.createObjectURL(file);
-      // Place in first empty slot or overwrite by index
       let targetIndex = newPhotos.findIndex((slot) => slot === null);
       if (targetIndex === -1 && i < 8) targetIndex = i;
 
@@ -176,7 +260,6 @@ export default function App() {
     setPhotos(newPhotos);
   };
 
-  // Load sample photos
   const handleLoadSamplePhotos = () => {
     setUploadWarning(null);
     setPhotos([
@@ -216,20 +299,17 @@ export default function App() {
     ]);
   };
 
-  // Remove specific photo slot
   const handleRemovePhoto = (index: number) => {
     const updated = [...photos];
     updated[index] = null;
     setPhotos(updated);
   };
 
-  // Clear all photo slots
   const handleClearAllPhotos = () => {
     setPhotos([null, null, null, null, null, null, null, null]);
     setUploadWarning(null);
   };
 
-  // Update comment for specific photo
   const handleUpdateComment = (index: number, comment: string) => {
     const updated = [...photos];
     if (updated[index]) {
@@ -241,36 +321,96 @@ export default function App() {
     }
   };
 
-  // Insert preset observation into slot
   const handleApplyPreset = (index: number) => {
     if (!photos[index]) return;
     const randomPreset = PRESET_OBSERVATIONS[Math.floor(Math.random() * PRESET_OBSERVATIONS.length)];
     handleUpdateComment(index, randomPreset);
   };
 
-  // Trigger report creation (F05)
-  const handleCreateReport = () => {
-    const currentSeq = currentSite?.seqCount || 1;
-    const seqStr = String(currentSeq).padStart(3, '0');
-    const filename = `${currentSite?.siteNo || siteInput}-${seqStr}.gslides`;
-    setGeneratedFilename(filename);
-
+  // Trigger report creation (F05) with Google Drive Integration
+  const handleCreateReport = async () => {
     setCurrentScreen('screen-success');
     setIsGenerating(true);
     setGenerationStep(1);
+
+    const siteNo = currentSite?.siteNo || siteInput || 'AGT-092';
+    let seqNumber = currentSite?.seqCount || 1;
+
+    // If connected to Google Drive, calculate sequence dynamically from Drive files
+    if (accessToken) {
+      try {
+        const driveSeq = await calculateNextDriveSequence(accessToken, siteNo);
+        if (driveSeq > seqNumber) {
+          seqNumber = driveSeq;
+        }
+      } catch (err) {
+        console.warn('Using local sequence counter:', err);
+      }
+    }
+
+    const seqStr = String(seqNumber).padStart(3, '0');
+    const filename = `${siteNo}-${seqStr}.gslides`;
+    setGeneratedFilename(filename);
 
     setTimeout(() => {
       setGenerationStep(2);
     }, 450);
 
-    setTimeout(() => {
+    setTimeout(async () => {
       setGenerationStep(3);
+
+      // If user is authenticated with Google Drive, create report file in Drive
+      if (accessToken) {
+        try {
+          const reportPayload = {
+            siteNo,
+            location: currentSite?.location,
+            size: currentSite?.size,
+            format: currentSite?.format,
+            visual: visualDescription,
+            timestamp: new Date().toISOString(),
+            engineer: user?.displayName || user?.email || SYSTEM_CONSTANTS.author,
+            photos: photos.map((p, idx) => ({
+              slot: idx + 1,
+              page: idx < 4 ? 1 : 2,
+              name: p?.name || null,
+              comment: p?.comment || null,
+              hasImage: Boolean(p?.url)
+            }))
+          };
+
+          const createdFile = await createDriveReportDocument(accessToken, {
+            filename: `${filename}.json`,
+            folderId: SYSTEM_CONSTANTS.targetFolderId,
+            reportData: reportPayload
+          });
+
+          setSavedDriveFile(createdFile);
+          fetchDriveReports();
+        } catch (driveErr) {
+          console.warn('Notice: Could not write directly to target Drive folder (using simulated presentation link):', driveErr);
+        }
+      }
     }, 850);
 
     setTimeout(() => {
       setIsGenerating(false);
       setActiveSlidePage(1);
-    }, 1250);
+    }, 1300);
+  };
+
+  // Delete file from Drive with mandatory confirmation dialog (Workspace skill constraint)
+  const handleConfirmDelete = async () => {
+    if (!deleteConfirmationFile || !accessToken) return;
+    try {
+      await deleteDriveFile(accessToken, deleteConfirmationFile.id);
+      setDeleteConfirmationFile(null);
+      fetchDriveReports();
+      setDriveSuccessMessage(`Deleted file "${deleteConfirmationFile.name}" from Google Drive.`);
+      setTimeout(() => setDriveSuccessMessage(null), 3000);
+    } catch (err: any) {
+      alert(`Delete failed: ${err.message}`);
+    }
   };
 
   const copyToClipboard = (text: string) => {
@@ -282,7 +422,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col font-sans selection:bg-emerald-100 selection:text-emerald-900 antialiased">
       {/* ============================================================== */}
-      {/* TOP APPLICATION BAR                                             */}
+      {/* TOP APPLICATION BAR WITH GOOGLE DRIVE AUTH                      */}
       {/* ============================================================== */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-xs">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
@@ -309,7 +449,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* Stepper Indicator (active inside report generator workflow) */}
+          {/* Stepper Indicator */}
           {currentScreen !== 'screen-dashboard' && (
             <div className="hidden md:flex items-center space-x-2 text-xs font-semibold">
               <button
@@ -388,33 +528,96 @@ export default function App() {
             </div>
           )}
 
-          {/* User & Connected Source info */}
-          <div className="flex items-center space-x-4">
-            <div className="text-right hidden sm:block">
-              <p className="text-xs font-bold text-slate-800">{SYSTEM_CONSTANTS.role}</p>
-              <div className="flex items-center justify-end gap-1.5 text-[11px] text-slate-500">
-                <span>Connected:</span>
-                <a
-                  href={SYSTEM_CONSTANTS.inventoryUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="font-mono text-emerald-600 font-semibold hover:underline flex items-center gap-0.5"
-                  title="View Inventori_2026.gsheets"
+          {/* User & Google Drive Auth integration */}
+          <div className="flex items-center space-x-3">
+            {user ? (
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsDriveModalOpen(true)}
+                  className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-lg text-xs font-bold border border-blue-200 transition cursor-pointer"
+                  title="View Google Drive Inspection Files"
                 >
-                  <span>{SYSTEM_CONSTANTS.inventoryName}</span>
-                  <ExternalLink className="w-2.5 h-2.5" />
-                </a>
+                  <Folder className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Drive Files</span>
+                  {driveFiles.length > 0 && (
+                    <span className="bg-blue-200 text-blue-900 text-[10px] px-1.5 py-0.2 rounded-full font-mono">
+                      {driveFiles.length}
+                    </span>
+                  )}
+                </button>
+
+                <div className="text-right hidden sm:block">
+                  <p className="text-xs font-bold text-slate-800 truncate max-w-[150px]">
+                    {user.displayName || user.email?.split('@')[0]}
+                  </p>
+                  <p className="text-[11px] text-emerald-600 font-semibold flex items-center justify-end gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    <span>Drive Connected</span>
+                  </p>
+                </div>
+
+                {user.photoURL ? (
+                  <img
+                    src={user.photoURL}
+                    alt={user.displayName || 'Google Account'}
+                    className="w-9 h-9 rounded-full border border-slate-300 object-cover"
+                  />
+                ) : (
+                  <div className="w-9 h-9 rounded-full bg-emerald-700 text-white font-bold text-xs flex items-center justify-center border border-slate-300">
+                    {user.email ? user.email.charAt(0).toUpperCase() : 'PE'}
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleGoogleLogout}
+                  className="p-1.5 text-slate-400 hover:text-red-600 rounded hover:bg-slate-100 transition cursor-pointer"
+                  title="Sign out of Google Drive"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
               </div>
-            </div>
-            <div
-              className="w-9 h-9 rounded-full bg-slate-900 border border-slate-700 flex items-center justify-center text-white font-bold text-xs shadow-xs"
-              title={`${SYSTEM_CONSTANTS.role} - Big Tree Outdoor`}
-            >
-              PE
-            </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleGoogleSignIn}
+                disabled={isSigningIn}
+                className="inline-flex items-center gap-2 px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold shadow-xs transition hover:border-slate-400 active:scale-98 cursor-pointer"
+              >
+                {/* Official Google 'G' icon */}
+                <svg className="w-4 h-4" viewBox="0 0 24 24">
+                  <path
+                    fill="#4285F4"
+                    d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.8-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.24v3.15C3.26 21.36 7.33 24 12 24z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.14-1.55.38-2.27V6.58H1.24C.45 8.16 0 9.94 0 12s.45 3.84 1.24 5.42l4.04-3.15z"
+                  />
+                  <path
+                    fill="#EA4335"
+                    d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.24 6.58l4.04 3.15c.95-2.83 3.6-4.98 6.72-4.98z"
+                  />
+                </svg>
+                <span>{isSigningIn ? 'Connecting...' : 'Connect Google Drive'}</span>
+              </button>
+            )}
           </div>
         </div>
       </header>
+
+      {/* Drive Success Notification */}
+      {driveSuccessMessage && (
+        <div className="bg-emerald-600 text-white text-xs font-semibold px-4 py-2 text-center flex items-center justify-center gap-2 animate-in fade-in">
+          <Check className="w-4 h-4" />
+          <span>{driveSuccessMessage}</span>
+        </div>
+      )}
 
       {/* ============================================================== */}
       {/* MAIN VIEWPORT CONTAINER                                         */}
@@ -425,7 +628,7 @@ export default function App() {
         {/* ============================================================== */}
         {currentScreen === 'screen-dashboard' && (
           <section className="animate-in fade-in duration-200">
-            {/* F01 Mandatory Header Attribution Banner */}
+            {/* Header Attribution Banner */}
             <div className="bg-gradient-to-r from-slate-900 via-slate-850 to-slate-900 rounded-2xl text-white p-8 mb-8 shadow-xl border border-slate-800 relative overflow-hidden">
               <div className="absolute -right-16 -top-16 w-80 h-80 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
               <div className="relative z-10 max-w-4xl">
@@ -444,8 +647,8 @@ export default function App() {
                   <span className="text-emerald-400 font-mono font-medium">
                     {SYSTEM_CONSTANTS.inventoryName}
                   </span>{' '}
-                  and standardizes photo inspection presentations in Google Slides in under two
-                  minutes with sequential naming.
+                  and standardizes photo inspection presentations in Google Slides and Google Drive in
+                  under two minutes with sequential naming.
                 </p>
 
                 <div className="flex flex-wrap items-center gap-4">
@@ -480,6 +683,17 @@ export default function App() {
                     <Search className="w-4 h-4 text-slate-400" />
                     <span>Browse Inventory Directory</span>
                   </button>
+
+                  {user && (
+                    <button
+                      type="button"
+                      onClick={() => setIsDriveModalOpen(true)}
+                      className="inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-blue-900/60 hover:bg-blue-800 text-blue-200 text-xs font-semibold border border-blue-700/80 transition cursor-pointer"
+                    >
+                      <Folder className="w-4 h-4 text-blue-300" />
+                      <span>Google Drive Files ({driveFiles.length})</span>
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -546,7 +760,7 @@ export default function App() {
                   <Folder className="w-4 h-4 text-blue-600" />
                 </div>
                 <p className="text-base font-bold text-slate-900 truncate font-mono">
-                  13gDVVR5fnjpfN7...
+                  {SYSTEM_CONSTANTS.targetFolderId.slice(0, 16)}...
                 </p>
                 <div className="flex items-center justify-between mt-1">
                   <p className="text-xs text-slate-500 font-medium font-mono">
@@ -571,7 +785,9 @@ export default function App() {
                   <Clock className="w-4 h-4 text-indigo-600" />
                 </div>
                 <p className="text-base font-bold text-slate-900">&lt; 2 Minutes</p>
-                <p className="text-xs text-slate-500 font-medium mt-1">From upload to Drive file</p>
+                <p className="text-xs text-slate-500 font-medium mt-1">
+                  {user ? 'Synced directly to Google Drive' : 'From upload to Drive file'}
+                </p>
               </div>
             </div>
 
@@ -644,7 +860,6 @@ export default function App() {
         {/* ============================================================== */}
         {currentScreen === 'screen-input' && (
           <section className="animate-in fade-in duration-200">
-            {/* Breadcrumb Header */}
             <div className="flex items-center justify-between mb-6 pb-4 border-b border-slate-200">
               <div>
                 <button
@@ -822,7 +1037,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Editable Visual Field (PRD F02 requirement) */}
+                  {/* Editable Visual Field */}
                   <div className="pt-2 border-t border-slate-100">
                     <label
                       htmlFor="meta-visual"
@@ -862,10 +1077,16 @@ export default function App() {
                         : `${siteInput || 'SITE'}-001.gslides`}
                     </span>
                   </p>
+                  {user && (
+                    <div className="mt-2 pt-2 border-t border-slate-200 text-emerald-700 flex items-center gap-1 font-semibold text-[11px]">
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Ready to save into your Google Drive account</span>
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {/* RIGHT COLUMN: F03 MULTI-IMAGE UPLOAD BOX (1-8 IMAGES) */}
+              {/* RIGHT COLUMN: F03 MULTI-IMAGE UPLOAD BOX */}
               <div className="lg:col-span-8 space-y-6">
                 <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-xs">
                   <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
@@ -919,7 +1140,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Warning notice for > 8 images (F03 requirement) */}
+                  {/* Warning notice for > 8 images */}
                   {uploadWarning && (
                     <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-center gap-2 animate-in fade-in">
                       <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
@@ -930,9 +1151,7 @@ export default function App() {
                   {/* Drag & Drop Zone */}
                   <div
                     onClick={() => fileInputRef.current?.click()}
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                    }}
+                    onDragOver={(e) => e.preventDefault()}
                     onDrop={(e) => {
                       e.preventDefault();
                       handleFilesChosen(e.dataTransfer.files);
@@ -951,7 +1170,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Visual Grid of 8 numbered frames (F03 specification) */}
+                  {/* Visual Grid of 8 numbered frames */}
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                     {photos.map((photo, i) => {
                       const slotNum = i + 1;
@@ -1068,7 +1287,6 @@ export default function App() {
         {/* ============================================================== */}
         {currentScreen === 'screen-comments' && (
           <section className="animate-in fade-in duration-200">
-            {/* Top header navigation */}
             <div className="flex flex-wrap items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-200">
               <div>
                 <button
@@ -1090,7 +1308,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Site quick reference badge */}
+              {/* Site reference badge */}
               <div className="bg-white border border-slate-200 px-3.5 py-1.5 rounded-lg text-xs flex items-center gap-4 shadow-xs">
                 <div>
                   <span className="text-slate-400">SiteNo:</span>{' '}
@@ -1147,7 +1365,7 @@ export default function App() {
               </p>
             </div>
 
-            {/* Pairwise 2-Photo Workspace (F04 Core) */}
+            {/* Pairwise 2-Photo Workspace */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
               {/* Left Photo (Slot A) */}
               {(() => {
@@ -1182,7 +1400,6 @@ export default function App() {
                         </span>
                       </div>
 
-                      {/* Image Preview Frame */}
                       <div className="relative w-full h-64 bg-slate-100 border border-slate-200 rounded-lg overflow-hidden flex items-center justify-center mb-4">
                         {photoLeft ? (
                           <img
@@ -1199,7 +1416,6 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Comment input box */}
                     <div>
                       <label
                         htmlFor={`comment-${leftIdx}`}
@@ -1270,7 +1486,6 @@ export default function App() {
                         </span>
                       </div>
 
-                      {/* Image Preview Frame */}
                       <div className="relative w-full h-64 bg-slate-100 border border-slate-200 rounded-lg overflow-hidden flex items-center justify-center mb-4">
                         {photoRight ? (
                           <img
@@ -1287,7 +1502,6 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Comment input box */}
                     <div>
                       <label
                         htmlFor={`comment-${rightIdx}`}
@@ -1357,7 +1571,7 @@ export default function App() {
                   className="px-7 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold tracking-wide shadow-md shadow-emerald-950/20 hover:shadow-emerald-600/30 transition flex items-center gap-2 cursor-pointer"
                 >
                   <FileText className="w-4 h-4" />
-                  <span>Create Report (F05)</span>
+                  <span>Create Report &amp; Save (F05)</span>
                 </button>
               </div>
             </div>
@@ -1387,8 +1601,7 @@ export default function App() {
                   <span className="font-mono font-medium text-slate-700">
                     {SYSTEM_CONSTANTS.templateName}
                   </span>
-                  , injecting metadata, resizing 8 photo frames, and creating sequential file in Google
-                  Drive.
+                  , injecting metadata, resizing 8 photo frames, and connecting with Google Drive.
                 </p>
 
                 {/* Live progress steps */}
@@ -1421,7 +1634,7 @@ export default function App() {
                       </span>
                     )}
                     <span>
-                      Calculating sequence ID for {currentSite?.siteNo || siteInput} in Drive folder...
+                      Calculating sequence ID for {currentSite?.siteNo || siteInput} in Google Drive...
                     </span>
                   </div>
 
@@ -1437,7 +1650,11 @@ export default function App() {
                         3
                       </span>
                     )}
-                    <span>Populating Page 1 &amp; Page 2 layout frames &amp; comments...</span>
+                    <span>
+                      {accessToken
+                        ? 'Populating slides layout & syncing to your Google Drive...'
+                        : 'Populating Page 1 & Page 2 layout frames & comments...'}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -1468,12 +1685,20 @@ export default function App() {
                           {SYSTEM_CONSTANTS.targetFolderId}
                         </a>
                       </p>
+
+                      {savedDriveFile && (
+                        <div className="mt-2 text-xs bg-emerald-800/80 px-3 py-1.5 rounded-lg border border-emerald-700/80 inline-flex items-center gap-2">
+                          <Folder className="w-3.5 h-3.5 text-blue-300" />
+                          <span>Google Drive Sync: </span>
+                          <span className="font-mono text-white font-bold">{savedDriveFile.name}</span>
+                        </div>
+                      )}
                     </div>
 
                     {/* Actions */}
                     <div className="flex flex-wrap items-center gap-3">
                       <a
-                        href={SYSTEM_CONSTANTS.templateUrl}
+                        href={savedDriveFile?.webViewLink || SYSTEM_CONSTANTS.templateUrl}
                         target="_blank"
                         rel="noreferrer"
                         className="px-5 py-3 bg-white hover:bg-slate-100 text-slate-900 rounded-xl text-xs font-bold shadow-lg transition flex items-center gap-2 cursor-pointer"
@@ -1518,7 +1743,7 @@ export default function App() {
                   )}
                 </div>
 
-                {/* LIVE SLIDE SIMULATION: PAGE 1 & PAGE 2 (TC07 & TC08 Proof) */}
+                {/* LIVE SLIDE SIMULATION: PAGE 1 & PAGE 2 */}
                 <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs">
                   <div className="flex flex-wrap items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-200">
                     <div>
@@ -1568,7 +1793,6 @@ export default function App() {
 
                   {/* 16:9 SLIDE CONTAINER SIMULATOR */}
                   <div className="max-w-5xl mx-auto bg-slate-900 p-3 sm:p-6 rounded-2xl shadow-2xl border border-slate-800">
-                    {/* SLIDE CANVAS (16:9 Widescreen) */}
                     <div className="bg-white rounded-lg shadow slide-aspect w-full p-4 sm:p-6 flex flex-col justify-between text-slate-900 relative overflow-hidden select-none border border-slate-200">
                       {/* SLIDE HEADER BLOCK */}
                       <div className="border-b-2 border-emerald-600 pb-2 mb-3">
@@ -1597,7 +1821,7 @@ export default function App() {
                           </div>
                         </div>
 
-                        {/* SLIDE METADATA BAR (Auto-populated from Inventori_2026) */}
+                        {/* SLIDE METADATA BAR */}
                         <div className="grid grid-cols-4 gap-2 mt-2 pt-2 border-t border-slate-100 text-[10px] leading-tight">
                           <div>
                             <span className="text-slate-400 font-bold block uppercase">
@@ -1640,7 +1864,7 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* SLIDE PHOTOS 4-GRID (Template Page 1 or 2) */}
+                      {/* SLIDE PHOTOS 4-GRID */}
                       <div className="grid grid-cols-2 gap-3 flex-1">
                         {(() => {
                           const startIndex = (activeSlidePage - 1) * 4;
@@ -1692,13 +1916,13 @@ export default function App() {
                       <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between text-[9px] text-slate-400">
                         <span>Big Tree Outdoor Sdn. Bhd. • Engineering &amp; Operations Division</span>
                         <span>
-                          Automated via BTO Inspection Tool • Ts. Azrin Helmi
+                          Automated via BTO Inspection Tool • {SYSTEM_CONSTANTS.author}
                         </span>
                       </div>
                     </div>
                   </div>
 
-                  {/* Testing Checklist Validation Box (PRD Section 10 QA Verification) */}
+                  {/* Testing Checklist Validation Box */}
                   <div className="mt-8 p-5 bg-slate-50 rounded-xl border border-slate-200">
                     <div className="flex items-center justify-between mb-3">
                       <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
@@ -1758,6 +1982,179 @@ export default function App() {
           </section>
         )}
       </main>
+
+      {/* ============================================================== */}
+      {/* GOOGLE DRIVE REPORTS VIEWER MODAL                              */}
+      {/* ============================================================== */}
+      {isDriveModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-3xl w-full p-6 shadow-2xl border border-slate-200 max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <div className="flex items-center gap-2">
+                <Folder className="w-5 h-5 text-blue-600" />
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    Google Drive Inspection Reports
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Target folder: <span className="font-mono">{SYSTEM_CONSTANTS.targetFolderPath}</span> ({SYSTEM_CONSTANTS.targetFolderId})
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => fetchDriveReports()}
+                  className="p-1.5 text-slate-500 hover:text-slate-800 rounded transition cursor-pointer"
+                  title="Refresh files"
+                >
+                  <RefreshCw className={`w-4 h-4 ${isLoadingDriveFiles ? 'animate-spin' : ''}`} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsDriveModalOpen(false)}
+                  className="text-slate-400 hover:text-slate-600 p-1 text-sm font-bold cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 mb-3 relative">
+              <input
+                type="text"
+                placeholder="Search Drive files by name or site..."
+                value={driveSearch}
+                onChange={(e) => setDriveSearch(e.target.value)}
+                className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-medium text-slate-800 focus:bg-white focus:ring-2 focus:ring-blue-500"
+              />
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+              {isLoadingDriveFiles && (
+                <div className="p-8 text-center text-slate-400">
+                  <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 text-blue-600" />
+                  <p className="text-xs font-medium">Loading Google Drive files...</p>
+                </div>
+              )}
+
+              {!isLoadingDriveFiles && driveFiles.length === 0 && (
+                <div className="p-8 text-center text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                  <Folder className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                  <p className="text-xs font-bold text-slate-700">No reports found in this view</p>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Generate an inspection report to sync reports directly into Google Drive.
+                  </p>
+                </div>
+              )}
+
+              {!isLoadingDriveFiles &&
+                driveFiles
+                  .filter((f) => f.name.toLowerCase().includes(driveSearch.toLowerCase()))
+                  .map((file) => (
+                    <div
+                      key={file.id}
+                      className="p-3 border border-slate-200 rounded-xl hover:border-blue-400 hover:bg-blue-50/20 transition flex items-center justify-between"
+                    >
+                      <div className="flex items-center gap-3">
+                        <FileText className="w-5 h-5 text-blue-600 flex-shrink-0" />
+                        <div>
+                          <p className="text-xs font-bold text-slate-900 font-mono">{file.name}</p>
+                          <p className="text-[11px] text-slate-400">
+                            {file.modifiedTime
+                              ? new Date(file.modifiedTime).toLocaleDateString()
+                              : 'Recent'}{' '}
+                            • {file.mimeType}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        {file.webViewLink && (
+                          <a
+                            href={file.webViewLink}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-xs font-semibold flex items-center gap-1"
+                          >
+                            <span>Open</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => setDeleteConfirmationFile(file)}
+                          className="p-1.5 text-slate-400 hover:text-red-600 rounded transition cursor-pointer"
+                          title="Delete file"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+            </div>
+
+            <div className="mt-4 pt-3 border-t border-slate-200 flex items-center justify-between text-xs text-slate-500">
+              <span className="font-mono text-[11px]">
+                Connected Drive Account: {user?.email}
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsDriveModalOpen(false)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-bold cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* DELETE CONFIRMATION DIALOG (MANDATORY PER WORKSPACE GUIDELINES) */}
+      {/* ============================================================== */}
+      {deleteConfirmationFile && (
+        <div className="fixed inset-0 z-60 bg-black/60 flex items-center justify-center p-4 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white rounded-xl max-w-md w-full p-6 shadow-2xl border border-red-200 animate-in zoom-in-95">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center text-red-600 flex-shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="text-base font-bold text-slate-900">
+                  Delete File from Google Drive?
+                </h4>
+                <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                  Are you sure you want to permanently delete{' '}
+                  <span className="font-mono font-bold text-slate-800">
+                    "{deleteConfirmationFile.name}"
+                  </span>{' '}
+                  from Google Drive? This action cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmationFile(null)}
+                className="px-4 py-2 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-100 border border-slate-300 transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDelete}
+                className="px-4 py-2 rounded-lg text-xs font-bold text-white bg-red-600 hover:bg-red-700 transition cursor-pointer"
+              >
+                Delete File
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ============================================================== */}
       {/* INVENTORY BROWSER MODAL (EXPLORE INVENTORI_2026)                */}
@@ -1831,7 +2228,7 @@ export default function App() {
 
                     <button
                       type="button"
-                      className="px-3 py-1.5 bg-slate-900 hover:bg-emerald-600 text-white rounded-lg text-xs font-bold transition flex items-center gap-1 flex-shrink-0"
+                      className="px-3 py-1.5 bg-slate-900 hover:bg-emerald-600 text-white rounded-lg text-xs font-bold transition flex items-center gap-1 flex-shrink-0 cursor-pointer"
                     >
                       <span>Select</span>
                       <ChevronRight className="w-3.5 h-3.5" />
@@ -1845,7 +2242,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setIsInventoryModalOpen(false)}
-                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-bold"
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-bold cursor-pointer"
               >
                 Close
               </button>
