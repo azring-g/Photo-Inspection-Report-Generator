@@ -2,7 +2,8 @@
 
 > **Alat Produktiviti Kejuruteraan Projek Dalaman**  
 > Dibina oleh: **Ts. Azrin Helmi Bin Mohd Ghazali**, Big Tree Outdoor Sdn. Bhd.  
-> Versi Dokumen: **PRD v1.1** (Diluluskan)
+> Versi Dokumen: **PRD v1.1** (Diluluskan)  
+> 🌐 **Pautan Aplikasi Google AI Studio (Live App):** [https://ai.studio/apps/19d92119-5854-4a1d-a51b-a9a5436b8f72](https://ai.studio/apps/19d92119-5854-4a1d-a51b-a9a5436b8f72)
 
 ---
 
@@ -71,6 +72,7 @@ Sebelum ini, jurutera perlu mengisi maklumat tapak secara manual, memasukkan gam
 
 | Perkara | Nama Fail / Folder | Pautan / ID |
 | :--- | :--- | :--- |
+| **Aplikasi Google AI Studio** | `Live Applet` | [https://ai.studio/apps/19d92119-5854-4a1d-a51b-a9a5436b8f72](https://ai.studio/apps/19d92119-5854-4a1d-a51b-a9a5436b8f72) |
 | **Sumber Data Inventori** | `Inventori_2026.gsheets` | [Buka Google Sheets](https://docs.google.com/spreadsheets/d/1ZRHVQ0IBSJ8C3L86IFXDH8DYGVFYFYAHCNM9B_TPYEK) |
 | **Templat Google Slides** | `IPR_Sample.gslides` | [Buka Templat Slaid](https://docs.google.com/presentation/d/1-lXKXd53YRH2N4i8uG-4zGI4Oe-pfkEm6MiCYDfCMdY/edit) |
 | **Folder Sasaran Drive** | `BTO / Reports / 2026` | `13gDVVR5fnjpfN7CSULNzU2dXPH3HjaNE` |
