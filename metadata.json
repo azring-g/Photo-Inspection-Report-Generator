@@ -1,0 +1,7 @@
+{
+  "name": "BTO Inspection Photos Report Generator",
+  "description": "Automated billboard inspection photo report generator by Ts. Azrin Helmi Bin Mohd Ghazali, Big Tree Outdoor Sdn. Bhd.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
