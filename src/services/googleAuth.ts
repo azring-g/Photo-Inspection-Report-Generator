@@ -1,18 +1,14 @@
-import { initializeApp } from 'firebase/app';
 import {
-  getAuth,
   signInWithPopup,
   GoogleAuthProvider,
   onAuthStateChanged,
   User,
   signOut
 } from 'firebase/auth';
-import firebaseConfig from '../../firebase-applet-config.json';
-
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
+import { auth } from './firebase';
 
 export const SCOPES = [
+  // Google Drive scopes
   'https://www.googleapis.com/auth/drive',
   'https://www.googleapis.com/auth/drive.activity',
   'https://www.googleapis.com/auth/drive.activity.readonly',
@@ -25,7 +21,10 @@ export const SCOPES = [
   'https://www.googleapis.com/auth/drive.metadata.readonly',
   'https://www.googleapis.com/auth/drive.photos.readonly',
   'https://www.googleapis.com/auth/drive.readonly',
-  'https://www.googleapis.com/auth/drive.scripts'
+  'https://www.googleapis.com/auth/drive.scripts',
+  // Google Sheets scopes
+  'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/spreadsheets.readonly'
 ];
 
 const provider = new GoogleAuthProvider();

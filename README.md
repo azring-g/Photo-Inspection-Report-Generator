@@ -17,12 +17,14 @@ Sebelum ini, jurutera perlu mengisi maklumat tapak secara manual, memasukkan gam
 
 ## 🚀 Kelebihan Utama Sistem
 
-- ⚡ **Pantas & Tepat**: Ekstrak maklumat tapak secara terus daripada fail induk inventori (`Inventori_2026.gsheets`).
+- ⚡ **Pantas & Tepat**: Ekstrak maklumat tapak secara terus daripada fail induk inventori Google Sheets (`Inventori_2026.gsheets`) menggunakan Google Sheets API sebenar.
+- 🔥 **Pangkalan Data Firebase Firestore**: Setiap laporan pemeriksaan yang dijana disimpan secara kekal dan selamat dalam koleksi Firestore (`/reports`) di rantau `asia-southeast1`.
 - 🖼️ **Muat Naik Mudah (1 hingga 8 Gambar)**: Cuma *drag & drop* gambar pemeriksaan tapak. Jika kurang daripada 8 keping, bingkai yang tidak digunakan akan kekal kelabu kemas tanpa merosakkan susun atur slaid.
+- 🔄 **Kawalan Putaran Gambar (90° Clockwise)**: Butang putaran pantas pada setiap slot gambar membolehkan jurutera membetulkan orientasi gambar tegak atau melintang sebelum laporan dijana.
 - 💬 **Ulasan Berpasangan (*Pairwise Review*)**: Semak 2 keping gambar bersebelahan dalam satu paparan dan masukkan ulasan teknikal dengan pantas (disertakan butang pilihan ulasan segera).
 - 📁 **Penamaan Fail Bersiri Automatik**: Sistem secara automatik mengimbas Google Drive dan menamakan laporan baharu mengikut format bersiri:  
   `[Nombor Tapak]-[Nombor Siri 3 Digit]` (Contoh: **`AGT-092-001.gslides`**).
-- ☁️ **Integrasi Google Drive Sebenar**: Boleh terus log masuk menggunakan akaun Google untuk menyemak, menjana, dan membuka fail terus di Google Drive.
+- ☁️ **Integrasi Penuh Google Workspace & Firebase**: Log masuk menggunakan akaun Google untuk menyemak data Sheets secara langsung, menyimpan slaid ke Google Drive, dan menguruskan rekod sejarah di Firebase.
 
 ---
 

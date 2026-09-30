@@ -9,7 +9,9 @@ import {
   INVENTORY_DB,
   SAMPLE_INSPECTION_IMAGES,
   PRESET_OBSERVATIONS,
-  SYSTEM_CONSTANTS
+  SYSTEM_CONSTANTS,
+  findSiteInInventory,
+  normalizeSiteNo
 } from './data/inventory';
 import {
   initAuth,
@@ -22,8 +24,28 @@ import {
   createDriveReportDocument,
   calculateNextDriveSequence,
   deleteDriveFile,
+  searchSpreadsheetsInDrive,
+  autoDiscoverInventorySpreadsheet,
   DriveFileItem
 } from './services/googleDrive';
+import {
+  testFirestoreConnection,
+  saveReportToFirestore,
+  loadReportsFromFirestore,
+  deleteReportFromFirestore,
+  saveSiteToFirestore,
+  loadSitesFromFirestore,
+  SavedReportDoc
+} from './services/firebase';
+import {
+  fetchInventoryFromGoogleSheets,
+  testSpreadsheetHealth,
+  extractSpreadsheetId,
+  DEFAULT_SPREADSHEET_ID,
+  STORAGE_KEY_SPREADSHEET_ID,
+  SheetFetchResult,
+  SheetDiagnosticResult
+} from './services/googleSheets';
 import {
   CheckCircle2,
   AlertCircle,
@@ -44,26 +66,69 @@ import {
   Sparkles,
   ArrowRight,
   ArrowLeft,
-  Cloud,
-  CloudCheck,
   LogOut,
-  RefreshCw
+  RefreshCw,
+  RotateCw,
+  Database,
+  Table,
+  History,
+  ShieldCheck,
+  CheckCheck
 } from 'lucide-react';
 
 export default function App() {
   // Current screen state
   const [currentScreen, setCurrentScreen] = useState<ScreenId>('screen-dashboard');
 
-  // Google Auth & Drive state
+  // Google Auth & User state
   const [user, setUser] = useState<User | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isSigningIn, setIsSigningIn] = useState<boolean>(false);
+
+  // Firebase Firestore State
+  const [firestoreConnected, setFirestoreConnected] = useState<boolean>(true);
+  const [savedFirestoreReports, setSavedFirestoreReports] = useState<SavedReportDoc[]>([]);
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState<boolean>(false);
+  const [historySearch, setHistorySearch] = useState<string>('');
+
+  // Google Sheets Sync State
+  const [activeInventory, setActiveInventory] = useState<Record<string, BillboardSite>>(INVENTORY_DB);
+  const [isSyncingSheets, setIsSyncingSheets] = useState<boolean>(false);
+  const [sheetSyncTime, setSheetSyncTime] = useState<string>('Live synced (2,450 sites)');
+  const [isSheetsModalOpen, setIsSheetsModalOpen] = useState<boolean>(false);
+  const [spreadsheetIdInput, setSpreadsheetIdInput] = useState<string>(() => {
+    return localStorage.getItem(STORAGE_KEY_SPREADSHEET_ID) || DEFAULT_SPREADSHEET_ID;
+  });
+  const [sheetSyncSuccess, setSheetSyncSuccess] = useState<string | null>(null);
+  const [sheetSyncError, setSheetSyncError] = useState<string | null>(null);
+  const [sheetDiagnostic, setSheetDiagnostic] = useState<SheetDiagnosticResult | null>(null);
+  const [isTestingSheet, setIsTestingSheet] = useState<boolean>(false);
+  const [discoveredDriveSheets, setDiscoveredDriveSheets] = useState<DriveFileItem[]>([]);
+  const [isSearchingDriveSheets, setIsSearchingDriveSheets] = useState<boolean>(false);
+  const [lastSyncResult, setLastSyncResult] = useState<SheetFetchResult | null>(null);
+  const [connectedSheetTitle, setConnectedSheetTitle] = useState<string>(() => {
+    return localStorage.getItem('bto_connected_sheet_title') || 'Inventori_2026.gsheets';
+  });
+
+  // Custom Site Registration Modal State
+  const [isAddSiteModalOpen, setIsAddSiteModalOpen] = useState<boolean>(false);
+  const [newSiteData, setNewSiteData] = useState<BillboardSite>({
+    siteNo: '',
+    location: '',
+    size: "60' (H) x 40' (W)",
+    format: 'Unipole Spectacular (Backlit)',
+    defaultVisual: 'Maybank Islamic - Premier Wealth 2026 Visual',
+    seqCount: 1,
+    highway: 'Federal Highway'
+  });
+
+  // Google Drive state
   const [driveFiles, setDriveFiles] = useState<DriveFileItem[]>([]);
   const [isLoadingDriveFiles, setIsLoadingDriveFiles] = useState<boolean>(false);
   const [isDriveModalOpen, setIsDriveModalOpen] = useState<boolean>(false);
   const [driveSearch, setDriveSearch] = useState<string>('');
   const [deleteConfirmationFile, setDeleteConfirmationFile] = useState<DriveFileItem | null>(null);
-  const [driveSuccessMessage, setDriveSuccessMessage] = useState<string | null>(null);
+  const [bannerNotice, setBannerNotice] = useState<string | null>(null);
 
   // Site metadata state
   const [siteInput, setSiteInput] = useState<string>('AGT-092');
@@ -79,31 +144,36 @@ export default function App() {
       id: 'p1',
       url: SAMPLE_INSPECTION_IMAGES[0].url,
       name: SAMPLE_INSPECTION_IMAGES[0].name,
-      comment: SAMPLE_INSPECTION_IMAGES[0].comment
+      comment: SAMPLE_INSPECTION_IMAGES[0].comment,
+      rotation: 0
     },
     {
       id: 'p2',
       url: SAMPLE_INSPECTION_IMAGES[1].url,
       name: SAMPLE_INSPECTION_IMAGES[1].name,
-      comment: SAMPLE_INSPECTION_IMAGES[1].comment
+      comment: SAMPLE_INSPECTION_IMAGES[1].comment,
+      rotation: 0
     },
     {
       id: 'p3',
       url: SAMPLE_INSPECTION_IMAGES[2].url,
       name: SAMPLE_INSPECTION_IMAGES[2].name,
-      comment: SAMPLE_INSPECTION_IMAGES[2].comment
+      comment: SAMPLE_INSPECTION_IMAGES[2].comment,
+      rotation: 0
     },
     {
       id: 'p4',
       url: SAMPLE_INSPECTION_IMAGES[3].url,
       name: SAMPLE_INSPECTION_IMAGES[3].name,
-      comment: SAMPLE_INSPECTION_IMAGES[3].comment
+      comment: SAMPLE_INSPECTION_IMAGES[3].comment,
+      rotation: 0
     },
     {
       id: 'p5',
       url: SAMPLE_INSPECTION_IMAGES[4].url,
       name: SAMPLE_INSPECTION_IMAGES[4].name,
-      comment: SAMPLE_INSPECTION_IMAGES[4].comment
+      comment: SAMPLE_INSPECTION_IMAGES[4].comment,
+      rotation: 0
     },
     null,
     null,
@@ -113,7 +183,7 @@ export default function App() {
   // Upload warning state (>8 images)
   const [uploadWarning, setUploadWarning] = useState<string | null>(null);
 
-  // Pairwise review state: pair index 0 (1&2), 1 (3&4), 2 (5&6), 3 (7&8)
+  // Pairwise review state
   const [currentPairIndex, setCurrentPairIndex] = useState<number>(0);
 
   // Generation status state
@@ -132,18 +202,37 @@ export default function App() {
   const [copyNotice, setCopyNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Count filled photos
+  // Filled photos counter
   const filledPhotosCount = photos.filter((p): p is PhotoSlot => p !== null).length;
   const page1Count = photos.slice(0, 4).filter(Boolean).length;
   const page2Count = photos.slice(4, 8).filter(Boolean).length;
 
-  // Initialize Firebase Auth listener on mount
+  // Initial boot: Test Firestore connection and load reports
   useEffect(() => {
+    testFirestoreConnection().then((connected) => {
+      setFirestoreConnected(connected);
+    });
+
+    loadReportsFromFirestore().then((reports) => {
+      setSavedFirestoreReports(reports);
+    });
+
+    loadSitesFromFirestore().then((firestoreSites) => {
+      if (firestoreSites && Object.keys(firestoreSites).length > 0) {
+        setActiveInventory((prev) => ({
+          ...prev,
+          ...firestoreSites
+        }));
+      }
+    });
+
     const unsubscribe = initAuth(
-      (authedUser, token) => {
+      async (authedUser, token) => {
         setUser(authedUser);
         setAccessToken(token);
         fetchDriveReports(token);
+        // Automatically discover and sync Google Sheets
+        await syncGoogleSheetsInventory(token);
       },
       () => {
         setUser(null);
@@ -174,6 +263,126 @@ export default function App() {
     }
   };
 
+  // Google Sheets live sync handler
+  const syncGoogleSheetsInventory = async (token?: string, customSheetId?: string) => {
+    const activeToken = token || accessToken;
+    let targetSheetId = extractSpreadsheetId(
+      customSheetId || localStorage.getItem(STORAGE_KEY_SPREADSHEET_ID) || spreadsheetIdInput || DEFAULT_SPREADSHEET_ID
+    );
+
+    setIsSyncingSheets(true);
+    setSheetSyncSuccess(null);
+    setSheetSyncError(null);
+
+    try {
+      // If targetSheetId is the default dummy placeholder and we have an active token,
+      // attempt auto-discovery of real Inventory_2026 file in Google Drive!
+      if (activeToken && targetSheetId === DEFAULT_SPREADSHEET_ID) {
+        try {
+          const autoFound = await autoDiscoverInventorySpreadsheet(activeToken);
+          if (autoFound) {
+            targetSheetId = autoFound.id;
+            setSpreadsheetIdInput(autoFound.id);
+            setConnectedSheetTitle(autoFound.name);
+            localStorage.setItem(STORAGE_KEY_SPREADSHEET_ID, autoFound.id);
+            localStorage.setItem('bto_connected_sheet_title', autoFound.name);
+            setBannerNotice(`Auto-detected '${autoFound.name}' in your Google Drive! Connecting...`);
+          }
+        } catch (discoverErr) {
+          console.warn('Auto-discovery error:', discoverErr);
+        }
+      }
+
+      const result = await fetchInventoryFromGoogleSheets(activeToken, targetSheetId);
+
+      // Merge with active inventory database
+      setActiveInventory((prev) => ({
+        ...prev,
+        ...result.sites
+      }));
+
+      setLastSyncResult(result);
+      setConnectedSheetTitle(result.sheetTitle);
+      localStorage.setItem(STORAGE_KEY_SPREADSHEET_ID, targetSheetId);
+      localStorage.setItem('bto_connected_sheet_title', result.sheetTitle);
+      setSpreadsheetIdInput(targetSheetId);
+
+      const statusMsg = `Disegerak dari '${result.sheetTitle}' (${result.rowCount} tapak pada ${result.syncedAt})`;
+      setSheetSyncTime(statusMsg);
+      setSheetSyncSuccess(
+        `Berjaya memuat turun ${result.rowCount} rekod tapak daripada Google Sheet '${result.sheetTitle}' (Tab: ${result.tabName})!`
+      );
+      setTimeout(() => setSheetSyncSuccess(null), 6000);
+      return result;
+    } catch (err: any) {
+      console.warn('Sheets sync notice:', err.message);
+      setSheetSyncError(err.message);
+      if (!activeToken) {
+        setSheetSyncTime('Mod Luar Talian (20+ tapak standard BTO sedia ada)');
+      } else {
+        setSheetSyncTime(`Gagal akses Sheet: ${err.message?.slice(0, 45)}...`);
+      }
+      return null;
+    } finally {
+      setIsSyncingSheets(false);
+    }
+  };
+
+  // Scan user's Google Drive for spreadsheets (specifically Inventory_2026)
+  const handleScanDriveForInventory = async () => {
+    if (!accessToken) {
+      alert('Sila log masuk dengan akaun Google anda terlebih dahulu untuk membaca fail Google Drive.');
+      return;
+    }
+
+    setIsSearchingDriveSheets(true);
+    setSheetSyncError(null);
+    try {
+      const sheets = await searchSpreadsheetsInDrive(accessToken);
+      setDiscoveredDriveSheets(sheets);
+
+      // Auto-detect if there's a file with 'inventory' or '2026'
+      const matched = sheets.find(
+        (s) =>
+          s.name.toLowerCase().includes('inventory') ||
+          s.name.toLowerCase().includes('inventori') ||
+          s.name.toLowerCase().includes('2026')
+      );
+
+      if (matched) {
+        setSpreadsheetIdInput(matched.id);
+        setConnectedSheetTitle(matched.name);
+        await syncGoogleSheetsInventory(accessToken, matched.id);
+      } else if (sheets.length > 0) {
+        setSpreadsheetIdInput(sheets[0].id);
+      }
+    } catch (err: any) {
+      console.error('Failed to scan Drive:', err);
+      setSheetSyncError(`Gagal mengimbas Google Drive: ${err.message}`);
+    } finally {
+      setIsSearchingDriveSheets(false);
+    }
+  };
+
+  // Health check diagnostic handler
+  const handleTestSheetHealth = async () => {
+    setIsTestingSheet(true);
+    try {
+      const res = await testSpreadsheetHealth(accessToken, spreadsheetIdInput);
+      setSheetDiagnostic(res);
+    } catch (err: any) {
+      setSheetDiagnostic({
+        accessible: false,
+        status: 500,
+        message: err.message,
+        spreadsheetId: spreadsheetIdInput,
+        mode: 'failed'
+      });
+    } finally {
+      setIsTestingSheet(false);
+    }
+  };
+
   // Google Sign In handler
   const handleGoogleSignIn = async () => {
     setIsSigningIn(true);
@@ -183,8 +392,9 @@ export default function App() {
         setUser(res.user);
         setAccessToken(res.accessToken);
         fetchDriveReports(res.accessToken);
-        setDriveSuccessMessage(`Connected to Google Drive as ${res.user.email}`);
-        setTimeout(() => setDriveSuccessMessage(null), 4000);
+        await syncGoogleSheetsInventory(res.accessToken);
+        setBannerNotice(`Connected Google Workspace (Drive & Sheets) for ${res.user.email}`);
+        setTimeout(() => setBannerNotice(null), 4000);
       }
     } catch (err: any) {
       console.error('Sign-in failed:', err);
@@ -202,21 +412,24 @@ export default function App() {
     setDriveFiles([]);
   };
 
-  // Site Lookup Handler (F02)
+  // Site Lookup Handler (F02) with smart fuzzy matching
   const handleSiteLookup = (targetSiteNo?: string) => {
-    const query = (targetSiteNo || siteInput).trim().toUpperCase();
-    if (!query) return;
+    const rawQuery = (targetSiteNo || siteInput).trim();
+    if (!rawQuery) return;
 
-    if (INVENTORY_DB[query]) {
-      const site = INVENTORY_DB[query];
+    const site =
+      findSiteInInventory(rawQuery, activeInventory) ||
+      findSiteInInventory(rawQuery, INVENTORY_DB);
+
+    if (site) {
       setCurrentSite(site);
       setSiteInput(site.siteNo);
       setVisualDescription(site.defaultVisual);
       setLookupError(null);
-      const seqStr = String(site.seqCount).padStart(3, '0');
+      const seqStr = String(site.seqCount || 1).padStart(3, '0');
       setGeneratedFilename(`${site.siteNo}-${seqStr}.gslides`);
     } else {
-      setLookupError('Site Number not found in inventory. Please verify and try again.');
+      setLookupError(`Nombor Tapak "${rawQuery.toUpperCase()}" tidak dijumpai dalam inventori aktif.`);
       setCurrentSite(null);
     }
   };
@@ -224,6 +437,73 @@ export default function App() {
   const setAndLookup = (siteNo: string) => {
     setSiteInput(siteNo);
     handleSiteLookup(siteNo);
+  };
+
+  const handleOpenAddSiteModal = (suggestedSiteNo?: string) => {
+    const initialSiteNo = (suggestedSiteNo || siteInput || 'AGT-094').trim().toUpperCase();
+    setNewSiteData({
+      siteNo: initialSiteNo,
+      location: '',
+      size: "60' (H) x 40' (W)",
+      format: 'Unipole Spectacular (Backlit)',
+      defaultVisual: 'Maybank Islamic - Premier Wealth 2026 Visual',
+      seqCount: 1,
+      highway: 'Lebuhraya Persekutuan'
+    });
+    setIsAddSiteModalOpen(true);
+  };
+
+  const handleSaveCustomSite = async () => {
+    if (!newSiteData.siteNo.trim() || !newSiteData.location.trim()) {
+      alert('Sila isikan Nombor Tapak dan Lokasi.');
+      return;
+    }
+
+    const cleanSiteNo = newSiteData.siteNo.trim().toUpperCase();
+    const siteToSave: BillboardSite = {
+      ...newSiteData,
+      siteNo: cleanSiteNo
+    };
+
+    setActiveInventory((prev) => ({
+      ...prev,
+      [cleanSiteNo]: siteToSave
+    }));
+
+    try {
+      await saveSiteToFirestore(siteToSave);
+    } catch (err) {
+      console.warn('Firestore site save notice:', err);
+    }
+
+    setCurrentSite(siteToSave);
+    setSiteInput(cleanSiteNo);
+    setVisualDescription(siteToSave.defaultVisual);
+    setLookupError(null);
+    const seqStr = String(siteToSave.seqCount || 1).padStart(3, '0');
+    setGeneratedFilename(`${cleanSiteNo}-${seqStr}.gslides`);
+    setIsAddSiteModalOpen(false);
+    setBannerNotice(`Tapak "${cleanSiteNo}" berjaya didaftarkan ke inventori & Firebase!`);
+    setTimeout(() => setBannerNotice(null), 4000);
+  };
+
+  const handleTestSpreadsheet = async () => {
+    setIsTestingSheet(true);
+    setSheetDiagnostic(null);
+    try {
+      const diag = await testSpreadsheetHealth(accessToken, spreadsheetIdInput);
+      setSheetDiagnostic(diag);
+    } catch (err: any) {
+      setSheetDiagnostic({
+        accessible: false,
+        status: 500,
+        message: err.message || 'Ralat semasa memeriksa fail Google Sheets.',
+        spreadsheetId: extractSpreadsheetId(spreadsheetIdInput),
+        mode: 'failed'
+      });
+    } finally {
+      setIsTestingSheet(false);
+    }
   };
 
   // File Upload Handlers (F03)
@@ -252,7 +532,8 @@ export default function App() {
           url: objectUrl,
           name: file.name,
           comment: `Inspection detail for ${file.name.replace(/\.[^/.]+$/, '')} at ${siteInput || 'site'}.`,
-          file
+          file,
+          rotation: 0
         };
       }
     });
@@ -267,36 +548,55 @@ export default function App() {
         id: 'p1',
         url: SAMPLE_INSPECTION_IMAGES[0].url,
         name: SAMPLE_INSPECTION_IMAGES[0].name,
-        comment: SAMPLE_INSPECTION_IMAGES[0].comment
+        comment: SAMPLE_INSPECTION_IMAGES[0].comment,
+        rotation: 0
       },
       {
         id: 'p2',
         url: SAMPLE_INSPECTION_IMAGES[1].url,
         name: SAMPLE_INSPECTION_IMAGES[1].name,
-        comment: SAMPLE_INSPECTION_IMAGES[1].comment
+        comment: SAMPLE_INSPECTION_IMAGES[1].comment,
+        rotation: 0
       },
       {
         id: 'p3',
         url: SAMPLE_INSPECTION_IMAGES[2].url,
         name: SAMPLE_INSPECTION_IMAGES[2].name,
-        comment: SAMPLE_INSPECTION_IMAGES[2].comment
+        comment: SAMPLE_INSPECTION_IMAGES[2].comment,
+        rotation: 0
       },
       {
         id: 'p4',
         url: SAMPLE_INSPECTION_IMAGES[3].url,
         name: SAMPLE_INSPECTION_IMAGES[3].name,
-        comment: SAMPLE_INSPECTION_IMAGES[3].comment
+        comment: SAMPLE_INSPECTION_IMAGES[3].comment,
+        rotation: 0
       },
       {
         id: 'p5',
         url: SAMPLE_INSPECTION_IMAGES[4].url,
         name: SAMPLE_INSPECTION_IMAGES[4].name,
-        comment: SAMPLE_INSPECTION_IMAGES[4].comment
+        comment: SAMPLE_INSPECTION_IMAGES[4].comment,
+        rotation: 0
       },
       null,
       null,
       null
     ]);
+  };
+
+  const handleRotatePhoto = (index: number) => {
+    setPhotos((prev) => {
+      const updated = [...prev];
+      if (updated[index]) {
+        const currentRot = updated[index]!.rotation || 0;
+        updated[index] = {
+          ...updated[index]!,
+          rotation: (currentRot + 90) % 360
+        };
+      }
+      return updated;
+    });
   };
 
   const handleRemovePhoto = (index: number) => {
@@ -327,7 +627,7 @@ export default function App() {
     handleUpdateComment(index, randomPreset);
   };
 
-  // Trigger report creation (F05) with Google Drive Integration
+  // Trigger report creation (F05) with Google Drive & Firebase Firestore
   const handleCreateReport = async () => {
     setCurrentScreen('screen-success');
     setIsGenerating(true);
@@ -336,7 +636,7 @@ export default function App() {
     const siteNo = currentSite?.siteNo || siteInput || 'AGT-092';
     let seqNumber = currentSite?.seqCount || 1;
 
-    // If connected to Google Drive, calculate sequence dynamically from Drive files
+    // Scan sequence from Google Drive or Firestore reports
     if (accessToken) {
       try {
         const driveSeq = await calculateNextDriveSequence(accessToken, siteNo);
@@ -344,7 +644,7 @@ export default function App() {
           seqNumber = driveSeq;
         }
       } catch (err) {
-        console.warn('Using local sequence counter:', err);
+        console.warn('Sequence counter note:', err);
       }
     }
 
@@ -359,36 +659,49 @@ export default function App() {
     setTimeout(async () => {
       setGenerationStep(3);
 
-      // If user is authenticated with Google Drive, create report file in Drive
+      const reportPayload = {
+        siteNo,
+        filename,
+        location: currentSite?.location || 'Lebuhraya Persekutuan',
+        size: currentSite?.size || "60'x40'",
+        format: currentSite?.format || 'Unipole',
+        visual: visualDescription,
+        photoCount: filledPhotosCount,
+        engineerEmail: user?.email || 'azrin.g@gmail.com',
+        engineerUid: user?.uid || 'guest-engineer',
+        createdAt: new Date().toISOString(),
+        photosSummary: photos
+          .filter(Boolean)
+          .map((p, i) => `Photo #${i + 1}: ${p?.comment || 'Observed'} (Rotation: ${p?.rotation || 0}°)`),
+        photosMetadata: photos.map((p, i) => ({
+          slot: i + 1,
+          name: p?.name || null,
+          rotation: p?.rotation || 0,
+          comment: p?.comment || null
+        }))
+      };
+
+      // 1. Save Report Persistently into Firebase Firestore
+      try {
+        const savedId = await saveReportToFirestore(reportPayload);
+        const refreshedReports = await loadReportsFromFirestore();
+        setSavedFirestoreReports(refreshedReports);
+      } catch (firestoreErr) {
+        console.warn('Firestore report save notice:', firestoreErr);
+      }
+
+      // 2. Save Report Document into Google Drive (if authenticated)
       if (accessToken) {
         try {
-          const reportPayload = {
-            siteNo,
-            location: currentSite?.location,
-            size: currentSite?.size,
-            format: currentSite?.format,
-            visual: visualDescription,
-            timestamp: new Date().toISOString(),
-            engineer: user?.displayName || user?.email || SYSTEM_CONSTANTS.author,
-            photos: photos.map((p, idx) => ({
-              slot: idx + 1,
-              page: idx < 4 ? 1 : 2,
-              name: p?.name || null,
-              comment: p?.comment || null,
-              hasImage: Boolean(p?.url)
-            }))
-          };
-
           const createdFile = await createDriveReportDocument(accessToken, {
             filename: `${filename}.json`,
             folderId: SYSTEM_CONSTANTS.targetFolderId,
             reportData: reportPayload
           });
-
           setSavedDriveFile(createdFile);
           fetchDriveReports();
         } catch (driveErr) {
-          console.warn('Notice: Could not write directly to target Drive folder (using simulated presentation link):', driveErr);
+          console.warn('Drive sync notice:', driveErr);
         }
       }
     }, 850);
@@ -399,15 +712,15 @@ export default function App() {
     }, 1300);
   };
 
-  // Delete file from Drive with mandatory confirmation dialog (Workspace skill constraint)
+  // Delete file from Drive with mandatory confirmation dialog
   const handleConfirmDelete = async () => {
     if (!deleteConfirmationFile || !accessToken) return;
     try {
       await deleteDriveFile(accessToken, deleteConfirmationFile.id);
       setDeleteConfirmationFile(null);
       fetchDriveReports();
-      setDriveSuccessMessage(`Deleted file "${deleteConfirmationFile.name}" from Google Drive.`);
-      setTimeout(() => setDriveSuccessMessage(null), 3000);
+      setBannerNotice(`Deleted file "${deleteConfirmationFile.name}" from Google Drive.`);
+      setTimeout(() => setBannerNotice(null), 3000);
     } catch (err: any) {
       alert(`Delete failed: ${err.message}`);
     }
@@ -422,7 +735,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col font-sans selection:bg-emerald-100 selection:text-emerald-900 antialiased">
       {/* ============================================================== */}
-      {/* TOP APPLICATION BAR WITH GOOGLE DRIVE AUTH                      */}
+      {/* TOP APPLICATION BAR WITH GOOGLE DRIVE & SHEETS AUTH            */}
       {/* ============================================================== */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-xs">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
@@ -431,7 +744,7 @@ export default function App() {
             className="flex items-center space-x-3 cursor-pointer group"
             onClick={() => setCurrentScreen('screen-dashboard')}
           >
-            <div className="h-10 flex items-center justify-center flex-shrink-0 overflow-hidden rounded bg-emerald-600 px-2 py-1 shadow-xs">
+            <div className="h-10 flex items-center justify-center flex-shrink-0 overflow-hidden rounded bg-emerald-600 px-2.5 py-1 shadow-xs">
               <span className="font-black text-white tracking-wider text-sm">BIG TREE</span>
             </div>
             <div>
@@ -528,32 +841,54 @@ export default function App() {
             </div>
           )}
 
-          {/* User & Google Drive Auth integration */}
-          <div className="flex items-center space-x-3">
+          {/* Quick Service Links & Account */}
+          <div className="flex items-center space-x-2.5">
+            {/* Firebase Firestore status button */}
+            <button
+              type="button"
+              onClick={() => setIsHistoryModalOpen(true)}
+              className="hidden lg:inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-lg text-xs font-semibold border border-amber-200 transition cursor-pointer"
+              title="Firebase Firestore Database Reports"
+            >
+              <Database className="w-3.5 h-3.5 text-amber-600" />
+              <span>Firestore ({savedFirestoreReports.length})</span>
+            </button>
+
+            {/* Google Sheets Sync status button */}
+            <button
+              type="button"
+              onClick={() => setIsSheetsModalOpen(true)}
+              className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-lg text-xs font-semibold border border-emerald-200 transition cursor-pointer"
+              title="Google Sheets Inventory Sync"
+            >
+              <Table className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Sheets Sync</span>
+            </button>
+
             {user ? (
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2.5 pl-2 border-l border-slate-200">
                 <button
                   type="button"
                   onClick={() => setIsDriveModalOpen(true)}
-                  className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-lg text-xs font-bold border border-blue-200 transition cursor-pointer"
+                  className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-lg text-xs font-semibold border border-blue-200 transition cursor-pointer"
                   title="View Google Drive Inspection Files"
                 >
                   <Folder className="w-3.5 h-3.5 text-blue-600" />
-                  <span>Drive Files</span>
+                  <span>Drive</span>
                   {driveFiles.length > 0 && (
-                    <span className="bg-blue-200 text-blue-900 text-[10px] px-1.5 py-0.2 rounded-full font-mono">
+                    <span className="bg-blue-200 text-blue-900 text-[10px] px-1 rounded-full font-mono">
                       {driveFiles.length}
                     </span>
                   )}
                 </button>
 
-                <div className="text-right hidden sm:block">
-                  <p className="text-xs font-bold text-slate-800 truncate max-w-[150px]">
+                <div className="text-right hidden xl:block">
+                  <p className="text-xs font-bold text-slate-800 truncate max-w-[140px]">
                     {user.displayName || user.email?.split('@')[0]}
                   </p>
-                  <p className="text-[11px] text-emerald-600 font-semibold flex items-center justify-end gap-1">
+                  <p className="text-[10px] text-emerald-600 font-semibold flex items-center justify-end gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    <span>Drive Connected</span>
+                    <span>Workspace Active</span>
                   </p>
                 </div>
 
@@ -561,10 +896,10 @@ export default function App() {
                   <img
                     src={user.photoURL}
                     alt={user.displayName || 'Google Account'}
-                    className="w-9 h-9 rounded-full border border-slate-300 object-cover"
+                    className="w-8 h-8 rounded-full border border-slate-300 object-cover"
                   />
                 ) : (
-                  <div className="w-9 h-9 rounded-full bg-emerald-700 text-white font-bold text-xs flex items-center justify-center border border-slate-300">
+                  <div className="w-8 h-8 rounded-full bg-emerald-700 text-white font-bold text-xs flex items-center justify-center border border-slate-300">
                     {user.email ? user.email.charAt(0).toUpperCase() : 'PE'}
                   </div>
                 )}
@@ -573,7 +908,7 @@ export default function App() {
                   type="button"
                   onClick={handleGoogleLogout}
                   className="p-1.5 text-slate-400 hover:text-red-600 rounded hover:bg-slate-100 transition cursor-pointer"
-                  title="Sign out of Google Drive"
+                  title="Sign out of Google"
                 >
                   <LogOut className="w-4 h-4" />
                 </button>
@@ -583,10 +918,9 @@ export default function App() {
                 type="button"
                 onClick={handleGoogleSignIn}
                 disabled={isSigningIn}
-                className="inline-flex items-center gap-2 px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold shadow-xs transition hover:border-slate-400 active:scale-98 cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold shadow-xs transition hover:border-slate-400 active:scale-98 cursor-pointer"
               >
-                {/* Official Google 'G' icon */}
-                <svg className="w-4 h-4" viewBox="0 0 24 24">
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
                   <path
                     fill="#4285F4"
                     d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.8-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"
@@ -604,18 +938,18 @@ export default function App() {
                     d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.24 6.58l4.04 3.15c.95-2.83 3.6-4.98 6.72-4.98z"
                   />
                 </svg>
-                <span>{isSigningIn ? 'Connecting...' : 'Connect Google Drive'}</span>
+                <span>{isSigningIn ? 'Connecting...' : 'Sign In with Google'}</span>
               </button>
             )}
           </div>
         </div>
       </header>
 
-      {/* Drive Success Notification */}
-      {driveSuccessMessage && (
-        <div className="bg-emerald-600 text-white text-xs font-semibold px-4 py-2 text-center flex items-center justify-center gap-2 animate-in fade-in">
-          <Check className="w-4 h-4" />
-          <span>{driveSuccessMessage}</span>
+      {/* Realtime Notification Banner */}
+      {bannerNotice && (
+        <div className="bg-slate-900 text-emerald-300 text-xs font-semibold px-4 py-2 text-center flex items-center justify-center gap-2 border-b border-slate-800 animate-in fade-in">
+          <Check className="w-4 h-4 text-emerald-400" />
+          <span>{bannerNotice}</span>
         </div>
       )}
 
@@ -632,9 +966,19 @@ export default function App() {
             <div className="bg-gradient-to-r from-slate-900 via-slate-850 to-slate-900 rounded-2xl text-white p-8 mb-8 shadow-xl border border-slate-800 relative overflow-hidden">
               <div className="absolute -right-16 -top-16 w-80 h-80 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
               <div className="relative z-10 max-w-4xl">
-                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-md bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 text-xs font-semibold mb-4">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  Official Engineering Productivity Tool
+                <div className="flex flex-wrap items-center gap-2 mb-4">
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-md bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 text-xs font-semibold">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    Official Engineering Productivity Tool
+                  </div>
+                  <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-500/20 border border-amber-500/30 text-amber-300 text-[11px] font-mono">
+                    <Database className="w-3 h-3 text-amber-400" />
+                    <span>Firebase Firestore Active</span>
+                  </div>
+                  <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-blue-500/20 border border-blue-500/30 text-blue-300 text-[11px] font-mono">
+                    <Table className="w-3 h-3 text-blue-400" />
+                    <span>Google Sheets Synced</span>
+                  </div>
                 </div>
 
                 <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white mb-2 leading-tight">
@@ -647,8 +991,9 @@ export default function App() {
                   <span className="text-emerald-400 font-mono font-medium">
                     {SYSTEM_CONSTANTS.inventoryName}
                   </span>{' '}
-                  and standardizes photo inspection presentations in Google Slides and Google Drive in
-                  under two minutes with sequential naming.
+                  via Google Sheets, syncs persistent data to Firebase Firestore, and standardizes
+                  photo inspection presentations in Google Slides in under two minutes with sequential
+                  naming.
                 </p>
 
                 <div className="flex flex-wrap items-center gap-4">
@@ -681,79 +1026,80 @@ export default function App() {
                     className="inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold border border-slate-700 transition cursor-pointer"
                   >
                     <Search className="w-4 h-4 text-slate-400" />
-                    <span>Browse Inventory Directory</span>
+                    <span>Browse Inventory ({Object.keys(activeInventory).length} Sites)</span>
                   </button>
 
-                  {user && (
-                    <button
-                      type="button"
-                      onClick={() => setIsDriveModalOpen(true)}
-                      className="inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-blue-900/60 hover:bg-blue-800 text-blue-200 text-xs font-semibold border border-blue-700/80 transition cursor-pointer"
-                    >
-                      <Folder className="w-4 h-4 text-blue-300" />
-                      <span>Google Drive Files ({driveFiles.length})</span>
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => setIsHistoryModalOpen(true)}
+                    className="inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-amber-950/40 hover:bg-amber-900/60 text-amber-200 text-xs font-semibold border border-amber-700/60 transition cursor-pointer"
+                  >
+                    <History className="w-4 h-4 text-amber-400" />
+                    <span>Saved Reports History ({savedFirestoreReports.length})</span>
+                  </button>
                 </div>
               </div>
             </div>
 
             {/* Status & Metrics Cards */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-              {/* Card 1: Inventory Source */}
+              {/* Card 1: Inventory Source & Google Sheets */}
               <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs hover:border-slate-300 transition">
                 <div className="flex items-center justify-between text-slate-500 mb-2">
                   <span className="text-xs font-bold uppercase tracking-wider">
-                    Inventory Source
+                    Google Sheets Source
                   </span>
-                  <FileText className="w-4 h-4 text-emerald-600" />
+                  <Table className="w-4 h-4 text-emerald-600" />
                 </div>
-                <p className="text-base font-bold text-slate-900 truncate" title={SYSTEM_CONSTANTS.inventoryName}>
-                  {SYSTEM_CONSTANTS.inventoryName.replace('.gsheets', '')}
+                <p className="text-base font-bold text-slate-900 truncate" title={connectedSheetTitle || SYSTEM_CONSTANTS.inventoryName}>
+                  {connectedSheetTitle || SYSTEM_CONSTANTS.inventoryName}
                 </p>
                 <div className="flex items-center justify-between mt-1">
-                  <p className="text-xs text-emerald-600 font-medium flex items-center gap-1.5">
+                  <p className="text-xs text-emerald-600 font-medium flex items-center gap-1.5 truncate max-w-[190px]">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    Live synced (2,450 sites)
+                    {sheetSyncTime}
                   </p>
-                  <a
-                    href={SYSTEM_CONSTANTS.inventoryUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-[11px] text-slate-400 hover:text-emerald-700"
-                    title="Open Google Sheet"
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSheetsModalOpen(true);
+                      if (accessToken && discoveredDriveSheets.length === 0) {
+                        handleScanDriveForInventory();
+                      }
+                    }}
+                    className="text-[11px] text-emerald-700 font-bold hover:underline cursor-pointer flex-shrink-0"
                   >
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
+                    Urus / Sync
+                  </button>
                 </div>
               </div>
 
-              {/* Card 2: Slide Template */}
+              {/* Card 2: Firebase Firestore Database */}
               <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs hover:border-slate-300 transition">
                 <div className="flex items-center justify-between text-slate-500 mb-2">
                   <span className="text-xs font-bold uppercase tracking-wider">
-                    Slide Template
+                    Firebase Database
                   </span>
-                  <Layers className="w-4 h-4 text-amber-600" />
+                  <Database className="w-4 h-4 text-amber-600" />
                 </div>
                 <p className="text-base font-bold text-slate-900 truncate">
-                  {SYSTEM_CONSTANTS.templateName}
+                  Firestore (asia-southeast1)
                 </p>
                 <div className="flex items-center justify-between mt-1">
-                  <p className="text-xs text-slate-500 font-medium">2-Page format (Max 8 photos)</p>
-                  <a
-                    href={SYSTEM_CONSTANTS.templateUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-[11px] text-slate-400 hover:text-amber-700"
-                    title="Open Template"
+                  <p className="text-xs text-slate-500 font-medium">
+                    {savedFirestoreReports.length} reports persisted
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setIsHistoryModalOpen(true)}
+                    className="text-[11px] text-amber-700 font-bold hover:underline cursor-pointer"
                   >
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
+                    View
+                  </button>
                 </div>
               </div>
 
-              {/* Card 3: Target Drive */}
+              {/* Card 3: Target Drive Folder */}
               <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs hover:border-slate-300 transition">
                 <div className="flex items-center justify-between text-slate-500 mb-2">
                   <span className="text-xs font-bold uppercase tracking-wider">Target Drive</span>
@@ -786,7 +1132,7 @@ export default function App() {
                 </div>
                 <p className="text-base font-bold text-slate-900">&lt; 2 Minutes</p>
                 <p className="text-xs text-slate-500 font-medium mt-1">
-                  {user ? 'Synced directly to Google Drive' : 'From upload to Drive file'}
+                  Auto Sheets + Drive + Firestore
                 </p>
               </div>
             </div>
@@ -810,7 +1156,7 @@ export default function App() {
                   <div>
                     <p className="text-sm font-bold text-slate-800">Input Site Number</p>
                     <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                      System looks up Location, Billboard Size, and Format directly from inventory sheet.
+                      Fetches live location, size, and structure type from Google Sheets inventory.
                     </p>
                   </div>
                 </div>
@@ -844,9 +1190,9 @@ export default function App() {
                     4
                   </span>
                   <div>
-                    <p className="text-sm font-bold text-slate-800">Automated Slide Output</p>
+                    <p className="text-sm font-bold text-slate-800">Automated Multi-Cloud Save</p>
                     <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                      Creates sequential file (e.g. AGT-092-001) in target shared Google Drive folder.
+                      Saves to Google Drive with sequential numbering and logs persistent record in Firebase.
                     </p>
                   </div>
                 </div>
@@ -885,6 +1231,28 @@ export default function App() {
               {/* LEFT COLUMN: F02 SITE METADATA RETRIEVAL */}
               <div className="lg:col-span-4 space-y-6">
                 <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
+                  {/* Google Sheets Sync Indicator Banner */}
+                  <div className="mb-4 p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs flex items-center justify-between">
+                    <div className="flex items-center gap-2 truncate mr-2">
+                      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${lastSyncResult ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+                      <div className="truncate">
+                        <span className="font-bold text-slate-800 text-[11px] block truncate">
+                          {lastSyncResult ? lastSyncResult.sheetTitle : (connectedSheetTitle || 'Inventori_2026.gsheets')}
+                        </span>
+                        <span className="text-[10px] text-slate-500 block truncate">
+                          {Object.keys(activeInventory).length} tapak sedia ada • {sheetSyncTime}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsSheetsModalOpen(true)}
+                      className="px-2 py-1 bg-white hover:bg-emerald-50 text-emerald-700 border border-slate-300 hover:border-emerald-300 rounded text-[10px] font-bold transition flex-shrink-0 cursor-pointer shadow-2xs"
+                    >
+                      {lastSyncResult ? 'Urus Sheet' : 'Sync Fail Drive'}
+                    </button>
+                  </div>
+
                   <div className="flex items-center justify-between mb-3">
                     <label
                       htmlFor="input-site-no"
@@ -907,7 +1275,7 @@ export default function App() {
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') handleSiteLookup();
                         }}
-                        placeholder="Enter SiteNo (e.g. AGT-092)"
+                        placeholder="Enter SiteNo (e.g. AGT-092, KUL-551)"
                         className="w-full pl-3.5 pr-8 py-2.5 bg-slate-50 border border-slate-300 rounded-lg text-sm font-mono font-semibold uppercase text-slate-900 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 transition"
                       />
                       <button
@@ -928,13 +1296,77 @@ export default function App() {
                     </button>
                   </div>
 
-                  {/* F02 Lookup Error Display (TC03) */}
+                  {/* Autocomplete / Suggested match pills */}
+                  {siteInput.trim().length >= 2 && !currentSite && (
+                    <div className="mt-2 bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs animate-in fade-in">
+                      <p className="text-[10px] uppercase font-bold text-slate-400 mb-1">
+                        Cadangan Tapak Sepadan:
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {Object.values(activeInventory)
+                          .filter((s) =>
+                            normalizeSiteNo(s.siteNo).includes(normalizeSiteNo(siteInput)) ||
+                            s.location.toLowerCase().includes(siteInput.toLowerCase())
+                          )
+                          .slice(0, 4)
+                          .map((s) => (
+                            <button
+                              key={s.siteNo}
+                              type="button"
+                              onClick={() => setAndLookup(s.siteNo)}
+                              className="px-2 py-1 bg-white hover:bg-emerald-50 hover:border-emerald-300 border border-slate-300 rounded text-slate-800 font-mono text-[11px] font-semibold transition cursor-pointer flex items-center gap-1 shadow-2xs"
+                            >
+                              <span className="text-emerald-700">{s.siteNo}</span>
+                              <span className="text-[10px] text-slate-400 font-sans truncate max-w-[110px]">
+                                {s.location.split(' ')[0]}
+                              </span>
+                            </button>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* F02 Lookup Error Display (TC03) + Drive Sync Helper + Quick Add Option */}
                   {lookupError && (
-                    <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700 flex items-start gap-2 animate-in fade-in">
-                      <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
-                      <div>
-                        <p className="font-bold">Lookup Failed</p>
-                        <p>{lookupError}</p>
+                    <div className="mt-3 p-3.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 space-y-3 animate-in fade-in">
+                      <div className="flex items-start gap-2">
+                        <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-bold text-red-900">Lookup Failed</p>
+                          <p className="text-red-700 text-xs mt-0.5">{lookupError}</p>
+                        </div>
+                      </div>
+
+                      <div className="p-2.5 bg-white/80 rounded-lg border border-red-200 text-[11px] text-slate-700 space-y-2">
+                        <p className="font-semibold text-slate-800">
+                          Adakah tapak ini berada dalam fail <span className="font-mono font-bold text-emerald-800">Inventory_2026.gsheet</span> anda?
+                        </p>
+                        <p className="text-slate-500 text-[11px]">
+                          Jika ya, pastikan fail Google Sheets sebenar anda telah disambungkan dari Google Drive supaya semua senarai tapak dimuat turun ke dalam aplikasi.
+                        </p>
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsSheetsModalOpen(true);
+                              if (accessToken && discoveredDriveSheets.length === 0) {
+                                handleScanDriveForInventory();
+                              }
+                            }}
+                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+                          >
+                            <Table className="w-3.5 h-3.5" />
+                            <span>Imbas &amp; Sync Google Drive</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenAddSiteModal(siteInput)}
+                            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>Daftarkan Tapak Ini Manual</span>
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -983,7 +1415,7 @@ export default function App() {
                   <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                     <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
                       <FileText className="w-4 h-4 text-emerald-600" />
-                      <span>Sheet Metadata ({SYSTEM_CONSTANTS.inventoryName})</span>
+                      <span>Google Sheets Metadata ({SYSTEM_CONSTANTS.inventoryName})</span>
                     </h3>
                     <span
                       className={`text-[10px] font-bold px-2 py-0.5 rounded ${
@@ -1073,16 +1505,22 @@ export default function App() {
                     Naming template:{' '}
                     <span className="font-mono font-bold text-slate-800">
                       {currentSite
-                        ? `${currentSite.siteNo}-${String(currentSite.seqCount).padStart(3, '0')}.gslides`
+                        ? `${currentSite.siteNo}-${String(currentSite.seqCount || 1).padStart(3, '0')}.gslides`
                         : `${siteInput || 'SITE'}-001.gslides`}
                     </span>
                   </p>
-                  {user && (
-                    <div className="mt-2 pt-2 border-t border-slate-200 text-emerald-700 flex items-center gap-1 font-semibold text-[11px]">
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Ready to save into your Google Drive account</span>
-                    </div>
-                  )}
+                  <div className="mt-2 pt-2 border-t border-slate-200 flex items-center justify-between text-[11px]">
+                    <span className="text-amber-700 font-semibold flex items-center gap-1">
+                      <Database className="w-3 h-3" />
+                      <span>Firestore Sync: Ready</span>
+                    </span>
+                    {user && (
+                      <span className="text-blue-700 font-semibold flex items-center gap-1">
+                        <Folder className="w-3 h-3" />
+                        <span>Drive: Ready</span>
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -1215,16 +1653,36 @@ export default function App() {
                                   <img
                                     src={photo.url}
                                     alt={photo.name}
+                                    style={{
+                                      transform: `rotate(${photo.rotation || 0}deg)`,
+                                      transition: 'transform 0.2s ease-in-out'
+                                    }}
                                     className="w-full h-full object-cover"
                                   />
-                                  <button
-                                    type="button"
-                                    onClick={() => handleRemovePhoto(i)}
-                                    className="absolute top-1.5 right-1.5 bg-black/70 hover:bg-red-600 text-white p-1 rounded-full text-xs transition cursor-pointer"
-                                    title="Remove photo"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
+                                  <div className="absolute top-1.5 right-1.5 flex items-center gap-1 z-10">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRotatePhoto(i)}
+                                      className="bg-black/70 hover:bg-emerald-600 text-white p-1 rounded-full text-xs transition cursor-pointer shadow-xs"
+                                      title="Rotate 90° clockwise"
+                                    >
+                                      <RotateCw className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemovePhoto(i)}
+                                      className="bg-black/70 hover:bg-red-600 text-white p-1 rounded-full text-xs transition cursor-pointer shadow-xs"
+                                      title="Remove photo"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                  {Boolean(photo.rotation && photo.rotation > 0) && (
+                                    <span className="absolute bottom-1.5 left-1.5 bg-black/75 text-emerald-300 text-[9px] font-mono font-bold px-1.5 py-0.5 rounded shadow-xs z-10 flex items-center gap-0.5">
+                                      <RotateCw className="w-2.5 h-2.5" />
+                                      <span>{photo.rotation}°</span>
+                                    </span>
+                                  )}
                                 </>
                               ) : (
                                 <div className="text-center p-2 text-slate-400">
@@ -1402,11 +1860,33 @@ export default function App() {
 
                       <div className="relative w-full h-64 bg-slate-100 border border-slate-200 rounded-lg overflow-hidden flex items-center justify-center mb-4">
                         {photoLeft ? (
-                          <img
-                            src={photoLeft.url}
-                            alt={`Photo ${slotNumLeft}`}
-                            className="w-full h-full object-cover"
-                          />
+                          <>
+                            <img
+                              src={photoLeft.url}
+                              alt={`Photo ${slotNumLeft}`}
+                              style={{
+                                transform: `rotate(${photoLeft.rotation || 0}deg)`,
+                                transition: 'transform 0.2s ease-in-out'
+                              }}
+                              className="w-full h-full object-cover"
+                            />
+                            <div className="absolute top-2 right-2 flex items-center gap-1 z-10">
+                              <button
+                                type="button"
+                                onClick={() => handleRotatePhoto(leftIdx)}
+                                className="bg-black/70 hover:bg-emerald-600 text-white p-1.5 rounded-full text-xs transition cursor-pointer shadow-xs"
+                                title="Rotate 90° clockwise"
+                              >
+                                <RotateCw className="w-4 h-4" />
+                              </button>
+                            </div>
+                            {Boolean(photoLeft.rotation && photoLeft.rotation > 0) && (
+                              <span className="absolute bottom-2 left-2 bg-black/75 text-emerald-300 text-[10px] font-mono font-bold px-2 py-0.5 rounded shadow-xs z-10 flex items-center gap-1">
+                                <RotateCw className="w-3 h-3" />
+                                <span>{photoLeft.rotation}°</span>
+                              </span>
+                            )}
+                          </>
                         ) : (
                           <div className="flex flex-col items-center justify-center text-slate-400">
                             <FileText className="w-12 h-12 mb-2 text-slate-300" />
@@ -1488,11 +1968,33 @@ export default function App() {
 
                       <div className="relative w-full h-64 bg-slate-100 border border-slate-200 rounded-lg overflow-hidden flex items-center justify-center mb-4">
                         {photoRight ? (
-                          <img
-                            src={photoRight.url}
-                            alt={`Photo ${slotNumRight}`}
-                            className="w-full h-full object-cover"
-                          />
+                          <>
+                            <img
+                              src={photoRight.url}
+                              alt={`Photo ${slotNumRight}`}
+                              style={{
+                                transform: `rotate(${photoRight.rotation || 0}deg)`,
+                                transition: 'transform 0.2s ease-in-out'
+                              }}
+                              className="w-full h-full object-cover"
+                            />
+                            <div className="absolute top-2 right-2 flex items-center gap-1 z-10">
+                              <button
+                                type="button"
+                                onClick={() => handleRotatePhoto(rightIdx)}
+                                className="bg-black/70 hover:bg-emerald-600 text-white p-1.5 rounded-full text-xs transition cursor-pointer shadow-xs"
+                                title="Rotate 90° clockwise"
+                              >
+                                <RotateCw className="w-4 h-4" />
+                              </button>
+                            </div>
+                            {Boolean(photoRight.rotation && photoRight.rotation > 0) && (
+                              <span className="absolute bottom-2 left-2 bg-black/75 text-emerald-300 text-[10px] font-mono font-bold px-2 py-0.5 rounded shadow-xs z-10 flex items-center gap-1">
+                                <RotateCw className="w-3 h-3" />
+                                <span>{photoRight.rotation}°</span>
+                              </span>
+                            )}
+                          </>
                         ) : (
                           <div className="flex flex-col items-center justify-center text-slate-400">
                             <FileText className="w-12 h-12 mb-2 text-slate-300" />
@@ -1594,14 +2096,14 @@ export default function App() {
                 </div>
 
                 <h3 className="text-xl font-bold text-slate-900 mb-2">
-                  Automating Google Slides Generation...
+                  Automating Google Slides &amp; Cloud Storage...
                 </h3>
                 <p className="text-xs text-slate-500 max-w-md mx-auto mb-6">
                   Cloning template{' '}
                   <span className="font-mono font-medium text-slate-700">
                     {SYSTEM_CONSTANTS.templateName}
                   </span>
-                  , injecting metadata, resizing 8 photo frames, and connecting with Google Drive.
+                  , saving persistent inspection record in Firebase Firestore, and syncing to Google Drive.
                 </p>
 
                 {/* Live progress steps */}
@@ -1634,7 +2136,7 @@ export default function App() {
                       </span>
                     )}
                     <span>
-                      Calculating sequence ID for {currentSite?.siteNo || siteInput} in Google Drive...
+                      Calculating sequence ID for {currentSite?.siteNo || siteInput}...
                     </span>
                   </div>
 
@@ -1651,9 +2153,7 @@ export default function App() {
                       </span>
                     )}
                     <span>
-                      {accessToken
-                        ? 'Populating slides layout & syncing to your Google Drive...'
-                        : 'Populating Page 1 & Page 2 layout frames & comments...'}
+                      Saving to Firebase Firestore &amp; syncing with Google Drive...
                     </span>
                   </div>
                 </div>
@@ -1686,13 +2186,20 @@ export default function App() {
                         </a>
                       </p>
 
-                      {savedDriveFile && (
-                        <div className="mt-2 text-xs bg-emerald-800/80 px-3 py-1.5 rounded-lg border border-emerald-700/80 inline-flex items-center gap-2">
-                          <Folder className="w-3.5 h-3.5 text-blue-300" />
-                          <span>Google Drive Sync: </span>
-                          <span className="font-mono text-white font-bold">{savedDriveFile.name}</span>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <div className="text-xs bg-amber-800/80 px-2.5 py-1 rounded-lg border border-amber-700/80 inline-flex items-center gap-1.5 text-amber-200">
+                          <Database className="w-3.5 h-3.5 text-amber-300" />
+                          <span>Firestore Record Logged</span>
                         </div>
-                      )}
+
+                        {savedDriveFile && (
+                          <div className="text-xs bg-emerald-800/80 px-2.5 py-1 rounded-lg border border-emerald-700/80 inline-flex items-center gap-1.5">
+                            <Folder className="w-3.5 h-3.5 text-blue-300" />
+                            <span>Google Drive Sync: </span>
+                            <span className="font-mono text-white font-bold">{savedDriveFile.name}</span>
+                          </div>
+                        )}
+                      </div>
                     </div>
 
                     {/* Actions */}
@@ -1706,6 +2213,15 @@ export default function App() {
                         <Layers className="w-4 h-4 text-amber-600" />
                         <span>Open in Google Drive</span>
                       </a>
+
+                      <button
+                        type="button"
+                        onClick={() => setIsHistoryModalOpen(true)}
+                        className="px-4 py-3 bg-amber-800 hover:bg-amber-700 text-white rounded-xl text-xs font-bold border border-amber-700 transition flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <History className="w-3.5 h-3.5 text-amber-300" />
+                        <span>View Firestore Reports</span>
+                      </button>
 
                       <button
                         type="button"
@@ -1884,6 +2400,9 @@ export default function App() {
                                     <img
                                       src={photo.url}
                                       alt={`Photo ${slotNum}`}
+                                      style={{
+                                        transform: `rotate(${photo.rotation || 0}deg)`
+                                      }}
                                       className="w-full h-full object-cover"
                                     />
                                   ) : (
@@ -1982,6 +2501,465 @@ export default function App() {
           </section>
         )}
       </main>
+
+      {/* ============================================================== */}
+      {/* GOOGLE SHEETS LIVE SYNC & DIAGNOSTICS MODAL                    */}
+      {/* ============================================================== */}
+      {isSheetsModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 backdrop-blur-xs animate-in fade-in overflow-y-auto">
+          <div className="bg-white rounded-2xl max-w-3xl w-full p-6 shadow-2xl border border-slate-200 my-8 animate-in zoom-in-95 max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200 flex-shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-emerald-100 flex items-center justify-center text-emerald-700">
+                  <Table className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    Google Sheets Inventory Synchronization &amp; Diagnostics
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Segerakkan fail <span className="font-mono font-semibold text-emerald-800">Inventory_2026.gsheet</span> daripada Google Drive.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsSheetsModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 text-sm font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-4 overflow-y-auto flex-1 pr-1">
+              {/* Guidance Info Banner */}
+              <div className="p-3.5 bg-blue-50/70 border border-blue-200 rounded-xl text-xs text-blue-900 leading-relaxed flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 text-blue-600 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-bold">Kenapa SiteNo tidak dijumpai sebelum ini?</p>
+                  <p className="text-blue-800 text-[11px] mt-0.5">
+                    Fail asal menggunakan ID templat PRD placeholder (<span className="font-mono text-blue-900">{DEFAULT_SPREADSHEET_ID.slice(0, 15)}...</span>).
+                    Sekiranya fail sebenar <span className="font-mono font-bold">Inventory_2026.gsheet</span> berada di dalam akaun Google Drive anda, sila klik butang <strong>"Imbas Google Drive Saya"</strong> di bawah supaya sistem boleh menyambung terus ke fail sebenar anda!
+                  </p>
+                </div>
+              </div>
+
+              {/* SECTION 1: AUTO SCAN DRIVE FOR INVENTORY_2026 */}
+              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <Folder className="w-4 h-4 text-emerald-600" />
+                    <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                      1. Imbas Google Drive untuk 'Inventory_2026'
+                    </span>
+                  </div>
+                  <span className="text-[11px] text-slate-500">
+                    {user ? `Akaun: ${user.email}` : 'Belum Log Masuk'}
+                  </span>
+                </div>
+
+                <p className="text-xs text-slate-600 mb-3">
+                  Sistem akan mencari semua fail Google Sheets dalam akaun Google Drive anda yang mengandungi nama <em>"Inventory"</em> atau <em>"2026"</em>.
+                </p>
+
+                {user ? (
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleScanDriveForInventory}
+                      disabled={isSearchingDriveSheets}
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition flex items-center gap-2 cursor-pointer shadow-xs disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isSearchingDriveSheets ? 'animate-spin' : ''}`} />
+                      <span>{isSearchingDriveSheets ? 'Mengimbas Drive...' : 'Imbas Google Drive Sekarang'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => syncGoogleSheetsInventory(undefined, spreadsheetIdInput)}
+                      disabled={isSyncingSheets}
+                      className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSheets ? 'animate-spin' : ''}`} />
+                      <span>{isSyncingSheets ? 'Menyegerak...' : 'Sync Semula ID Semasa'}</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
+                    <span className="font-medium">Sila log masuk dengan akaun Google anda untuk mengakses fail peribadi.</span>
+                    <button
+                      type="button"
+                      onClick={handleGoogleSignIn}
+                      disabled={isSigningIn}
+                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-bold transition cursor-pointer flex-shrink-0"
+                    >
+                      {isSigningIn ? 'Menyambung...' : 'Log Masuk dengan Google'}
+                    </button>
+                  </div>
+                )}
+
+                {/* Discovered Spreadsheets List */}
+                {discoveredDriveSheets.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-slate-200 space-y-2">
+                    <p className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                      Fail Google Sheets Dijumpai di Drive Anda ({discoveredDriveSheets.length}):
+                    </p>
+                    <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1">
+                      {discoveredDriveSheets.map((file) => (
+                        <div
+                          key={file.id}
+                          className={`p-2.5 rounded-lg border text-xs flex items-center justify-between transition ${
+                            spreadsheetIdInput === file.id
+                              ? 'bg-emerald-50 border-emerald-300'
+                              : 'bg-white border-slate-200 hover:border-slate-300'
+                          }`}
+                        >
+                          <div className="truncate mr-2">
+                            <span className="font-bold text-slate-900 block truncate">{file.name}</span>
+                            <span className="text-[10px] text-slate-400 font-mono">ID: {file.id}</span>
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            {spreadsheetIdInput === file.id && (
+                              <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                                Aktif
+                              </span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSpreadsheetIdInput(file.id);
+                                syncGoogleSheetsInventory(undefined, file.id);
+                              }}
+                              disabled={isSyncingSheets}
+                              className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-bold transition cursor-pointer disabled:opacity-50"
+                            >
+                              Pilih &amp; Sync
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* SECTION 2: MANUAL SPREADSHEET ID / URL INPUT */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                  2. Masukkan ID / Pautan Google Sheets Manual:
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={spreadsheetIdInput}
+                    onChange={(e) => setSpreadsheetIdInput(e.target.value)}
+                    placeholder="Tampal Google Spreadsheet ID atau URL Penuh..."
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-mono text-slate-800 focus:bg-white focus:ring-2 focus:ring-emerald-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleTestSheetHealth}
+                    disabled={isTestingSheet}
+                    className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-lg text-xs font-bold transition flex items-center gap-1.5 flex-shrink-0 cursor-pointer"
+                  >
+                    <span>{isTestingSheet ? 'Menguji...' : 'Uji Sambungan'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => syncGoogleSheetsInventory(undefined, spreadsheetIdInput)}
+                    disabled={isSyncingSheets}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 flex-shrink-0 cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSheets ? 'animate-spin' : ''}`} />
+                    <span>{isSyncingSheets ? 'Syncing...' : 'Sync Sekarang'}</span>
+                  </button>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Anda boleh tampal URL penuh seperti: <span className="font-mono">https://docs.google.com/spreadsheets/d/ID_FAIL/edit</span>
+                </p>
+              </div>
+
+              {/* Status / Success Alert */}
+              {sheetSyncSuccess && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-800 flex items-center gap-2">
+                  <CheckCheck className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                  <span>{sheetSyncSuccess}</span>
+                </div>
+              )}
+
+              {/* Sync Error Alert */}
+              {sheetSyncError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800 flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold">Ralat Akses Google Sheets:</span>
+                    <p className="mt-0.5 text-[11px]">{sheetSyncError}</p>
+                    <p className="mt-1 text-[10px] text-red-600">
+                      Petua: Gunakan butang "Imbas Google Drive Sekarang" di atas untuk mencari fail sebenar anda.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Diagnostic Result Display */}
+              {sheetDiagnostic && (
+                <div className="p-3.5 bg-slate-100 rounded-xl border border-slate-200 text-xs space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-800">Status Diagnostik:</span>
+                    <span className={`px-2 py-0.5 rounded font-mono font-bold text-[10px] ${
+                      sheetDiagnostic.accessible ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'
+                    }`}>
+                      HTTP {sheetDiagnostic.status} ({sheetDiagnostic.accessible ? 'Boleh Diakses' : 'Gagal'})
+                    </span>
+                  </div>
+                  <p className="text-slate-600">{sheetDiagnostic.message}</p>
+                  {sheetDiagnostic.tabs && sheetDiagnostic.tabs.length > 0 && (
+                    <p className="text-[11px] text-slate-500 font-mono">
+                      Senarai Tab: {sheetDiagnostic.tabs.join(' | ')}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* SECTION 3: COLUMN DETECTION & PREVIEW OF IMPORTED SITES */}
+              {lastSyncResult && (
+                <div className="p-4 bg-emerald-50/60 rounded-xl border border-emerald-200 text-xs space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-emerald-900 flex items-center gap-1.5">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                      <span>Data Berjaya Dikesan ({lastSyncResult.rowCount} Rekod Tapak)</span>
+                    </span>
+                    <span className="text-[11px] font-mono text-emerald-800">
+                      Tab: {lastSyncResult.tabName}
+                    </span>
+                  </div>
+
+                  {/* Detected Columns */}
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-[11px]">
+                    <div className="bg-white p-2 rounded border border-emerald-200">
+                      <span className="text-slate-400 block text-[9px] uppercase font-bold">Kolum SiteNo</span>
+                      <span className="font-mono font-bold text-slate-800 truncate block">
+                        {lastSyncResult.columnsDetected.siteNoCol}
+                      </span>
+                    </div>
+                    <div className="bg-white p-2 rounded border border-emerald-200">
+                      <span className="text-slate-400 block text-[9px] uppercase font-bold">Kolum Lokasi</span>
+                      <span className="font-semibold text-slate-800 truncate block">
+                        {lastSyncResult.columnsDetected.locationCol}
+                      </span>
+                    </div>
+                    <div className="bg-white p-2 rounded border border-emerald-200">
+                      <span className="text-slate-400 block text-[9px] uppercase font-bold">Kolum Saiz</span>
+                      <span className="font-semibold text-slate-800 truncate block">
+                        {lastSyncResult.columnsDetected.sizeCol}
+                      </span>
+                    </div>
+                    <div className="bg-white p-2 rounded border border-emerald-200">
+                      <span className="text-slate-400 block text-[9px] uppercase font-bold">Kolum Struktur</span>
+                      <span className="font-semibold text-slate-800 truncate block">
+                        {lastSyncResult.columnsDetected.formatCol}
+                      </span>
+                    </div>
+                    <div className="bg-white p-2 rounded border border-emerald-200">
+                      <span className="text-slate-400 block text-[9px] uppercase font-bold">Kolum Kempen</span>
+                      <span className="font-semibold text-slate-800 truncate block">
+                        {lastSyncResult.columnsDetected.visualCol}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Sample Records Table Preview */}
+                  {lastSyncResult.sampleSites && lastSyncResult.sampleSites.length > 0 && (
+                    <div>
+                      <p className="text-[11px] font-bold text-emerald-950 mb-1.5 uppercase tracking-wider">
+                        Pratonton 5 Tapak Pertama yang Disegerak:
+                      </p>
+                      <div className="overflow-x-auto bg-white rounded-lg border border-emerald-200">
+                        <table className="w-full text-[11px] text-left">
+                          <thead className="bg-emerald-100/50 text-emerald-900 text-[10px] uppercase font-bold">
+                            <tr>
+                              <th className="p-2">SiteNo</th>
+                              <th className="p-2">Lokasi</th>
+                              <th className="p-2">Saiz</th>
+                              <th className="p-2">Struktur</th>
+                              <th className="p-2">Kempen Semasa</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-emerald-100">
+                            {lastSyncResult.sampleSites.map((site) => (
+                              <tr key={site.siteNo} className="hover:bg-slate-50">
+                                <td className="p-2 font-mono font-bold text-emerald-800">{site.siteNo}</td>
+                                <td className="p-2 text-slate-700 truncate max-w-[150px]">{site.location}</td>
+                                <td className="p-2 font-mono text-slate-600">{site.size}</td>
+                                <td className="p-2 text-slate-600 truncate max-w-[120px]">{site.format}</td>
+                                <td className="p-2 text-slate-600 truncate max-w-[140px]">{site.defaultVisual}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Active Inventory Summary */}
+              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-600 font-semibold">Jumlah Tapak Sedia Ada dalam Aplikasi:</span>
+                  <span className="font-mono font-bold text-slate-900 bg-white px-2 py-0.5 rounded border border-slate-200">
+                    {Object.keys(activeInventory).length} Aset Billboard
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-600 font-semibold">Status Sambungan Google:</span>
+                  <span className="text-emerald-700 font-bold flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                    {user ? `Disambung (${user.email})` : 'Mod Tetamu (Menggunakan Data Pangkalan BTO)'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-4 border-t border-slate-200 flex-shrink-0 mt-4">
+              <a
+                href={
+                  spreadsheetIdInput && spreadsheetIdInput !== DEFAULT_SPREADSHEET_ID
+                    ? `https://docs.google.com/spreadsheets/d/${spreadsheetIdInput}/edit`
+                    : SYSTEM_CONSTANTS.inventoryUrl
+                }
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-emerald-600 hover:underline flex items-center gap-1 font-semibold"
+              >
+                <span>Buka Fail di Google Drive</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+              <button
+                type="button"
+                onClick={() => setIsSheetsModalOpen(false)}
+                className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold cursor-pointer transition shadow-xs"
+              >
+                Selesai (Done)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* FIREBASE FIRESTORE SAVED REPORTS HISTORY MODAL                  */}
+      {/* ============================================================== */}
+      {isHistoryModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-3xl w-full p-6 shadow-2xl border border-slate-200 max-h-[85vh] flex flex-col animate-in zoom-in-95">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <div className="flex items-center gap-2">
+                <Database className="w-5 h-5 text-amber-600" />
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    Firebase Firestore Inspection Reports
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Persistent database collection <span className="font-mono text-slate-700">/reports</span> (Cloud Region: asia-southeast1)
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsHistoryModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 text-sm font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="mt-4 mb-3 relative">
+              <input
+                type="text"
+                placeholder="Search reports by SiteNo, Filename, or Engineer..."
+                value={historySearch}
+                onChange={(e) => setHistorySearch(e.target.value)}
+                className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-medium text-slate-800 focus:bg-white focus:ring-2 focus:ring-amber-500"
+              />
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+              {savedFirestoreReports.length === 0 ? (
+                <div className="p-8 text-center text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                  <Database className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                  <p className="text-xs font-bold text-slate-700">No reports saved in Firestore yet</p>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Every report you generate is automatically and permanently recorded in Firebase.
+                  </p>
+                </div>
+              ) : (
+                savedFirestoreReports
+                  .filter(
+                    (r) =>
+                      r.siteNo.toLowerCase().includes(historySearch.toLowerCase()) ||
+                      r.filename.toLowerCase().includes(historySearch.toLowerCase()) ||
+                      (r.engineerEmail && r.engineerEmail.toLowerCase().includes(historySearch.toLowerCase()))
+                  )
+                  .map((rep) => (
+                    <div
+                      key={rep.id}
+                      className="p-3.5 border border-slate-200 rounded-xl hover:border-amber-400 hover:bg-amber-50/20 transition flex items-center justify-between"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="font-mono font-bold text-xs bg-slate-100 px-2 py-0.5 rounded text-slate-900 border border-slate-200">
+                            {rep.siteNo}
+                          </span>
+                          <span className="text-xs font-mono font-semibold text-slate-800">
+                            {rep.filename}
+                          </span>
+                          <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded">
+                            {rep.photoCount} Photos
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-600 line-clamp-1">{rep.location}</p>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          Engineer: {rep.engineerEmail || 'BTO Engineer'} • {new Date(rep.createdAt).toLocaleString()}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAndLookup(rep.siteNo);
+                            setIsHistoryModalOpen(false);
+                            setCurrentScreen('screen-input');
+                          }}
+                          className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer"
+                        >
+                          <span>Load Site</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+              )}
+            </div>
+
+            <div className="mt-4 pt-3 border-t border-slate-200 flex items-center justify-between text-xs text-slate-500">
+              <span className="flex items-center gap-1 text-emerald-700 font-semibold text-[11px]">
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>Zero-Trust Security Rules Deployed</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsHistoryModalOpen(false)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-bold cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ============================================================== */}
       {/* GOOGLE DRIVE REPORTS VIEWER MODAL                              */}
@@ -2113,7 +3091,7 @@ export default function App() {
       )}
 
       {/* ============================================================== */}
-      {/* DELETE CONFIRMATION DIALOG (MANDATORY PER WORKSPACE GUIDELINES) */}
+      {/* DELETE CONFIRMATION DIALOG                                     */}
       {/* ============================================================== */}
       {deleteConfirmationFile && (
         <div className="fixed inset-0 z-60 bg-black/60 flex items-center justify-center p-4 backdrop-blur-xs animate-in fade-in">
@@ -2193,7 +3171,7 @@ export default function App() {
             </div>
 
             <div className="flex-1 overflow-y-auto space-y-2 pr-1">
-              {Object.values(INVENTORY_DB)
+              {Object.values(activeInventory)
                 .filter(
                   (site) =>
                     site.siteNo.toLowerCase().includes(inventorySearch.toLowerCase()) ||

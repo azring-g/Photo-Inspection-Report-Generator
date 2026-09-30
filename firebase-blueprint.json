@@ -1,0 +1,110 @@
+{
+  "entities": {
+    "InspectionReport": {
+      "title": "InspectionReport",
+      "description": "A generated billboard photo inspection report record",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique report document ID"
+        },
+        "siteNo": {
+          "type": "string",
+          "description": "Billboard site identifier e.g. AGT-092"
+        },
+        "filename": {
+          "type": "string",
+          "description": "Generated sequential presentation filename e.g. AGT-092-001.gslides"
+        },
+        "location": {
+          "type": "string",
+          "description": "Billboard geographical location"
+        },
+        "size": {
+          "type": "string",
+          "description": "Billboard dimensions"
+        },
+        "format": {
+          "type": "string",
+          "description": "Structure type or format"
+        },
+        "visual": {
+          "type": "string",
+          "description": "Current campaign visual description"
+        },
+        "photoCount": {
+          "type": "number",
+          "description": "Number of filled photos (1 to 8)"
+        },
+        "photos": {
+          "type": "array",
+          "description": "List of photo slots metadata and observations"
+        },
+        "driveUrl": {
+          "type": "string",
+          "description": "URL to Google Drive document"
+        },
+        "engineerEmail": {
+          "type": "string",
+          "description": "Email of the engineer who generated the report"
+        },
+        "engineerUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the engineer"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO timestamp of creation"
+        }
+      },
+      "required": ["siteNo", "filename", "createdAt"]
+    },
+    "BillboardSite": {
+      "title": "BillboardSite",
+      "description": "A billboard inventory record synced from Google Sheets or Firestore",
+      "type": "object",
+      "properties": {
+        "siteNo": {
+          "type": "string",
+          "description": "Unique site number"
+        },
+        "location": {
+          "type": "string",
+          "description": "Billboard location"
+        },
+        "size": {
+          "type": "string",
+          "description": "Dimensions"
+        },
+        "format": {
+          "type": "string",
+          "description": "Structure format"
+        },
+        "defaultVisual": {
+          "type": "string",
+          "description": "Default campaign visual"
+        },
+        "seqCount": {
+          "type": "number",
+          "description": "Latest inspection sequence count"
+        }
+      },
+      "required": ["siteNo", "location", "size", "format"]
+    }
+  },
+  "firestore": {
+    "/reports/{reportId}": {
+      "schema": {
+        "$ref": "#/entities/InspectionReport"
+      },
+      "description": "Collection of billboard photo inspection reports"
+    },
+    "/inventory/{siteId}": {
+      "schema": {
+        "$ref": "#/entities/BillboardSite"
+      },
+      "description": "Collection of billboard site inventory records"
+    }
+  }
+}

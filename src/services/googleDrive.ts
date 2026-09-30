@@ -153,6 +153,89 @@ export async function createDriveReportDocument(
 }
 
 /**
+ * Search Drive specifically for spreadsheets and inventory files
+ */
+export async function searchSpreadsheetsInDrive(
+  accessToken: string,
+  searchTerm?: string
+): Promise<DriveFileItem[]> {
+  let query = "trashed = false and (mimeType = 'application/vnd.google-apps.spreadsheet' or mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')";
+  if (searchTerm && searchTerm.trim()) {
+    const cleanTerm = searchTerm.replace(/'/g, "\\'");
+    query += ` and name contains '${cleanTerm}'`;
+  }
+  const q = encodeURIComponent(query);
+  const fields = encodeURIComponent('files(id, name, mimeType, webViewLink, iconLink, createdTime, modifiedTime, size)');
+  const url = `https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=30&fields=${fields}&orderBy=modifiedTime desc`;
+
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json'
+    }
+  });
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.error?.message || `Failed to search spreadsheets in Drive: ${res.statusText}`);
+  }
+
+  const data = await res.json();
+  return data.files || [];
+}
+
+/**
+ * Auto-detect the best Inventory_2026 spreadsheet in the user's Google Drive
+ */
+export async function autoDiscoverInventorySpreadsheet(
+  accessToken: string
+): Promise<DriveFileItem | null> {
+  try {
+    // 1. First priority: Exact or close match for Inventory_2026 or Inventori_2026
+    const specificSearch = await searchSpreadsheetsInDrive(accessToken, 'Inventory_2026');
+    if (specificSearch.length > 0) {
+      return specificSearch[0];
+    }
+
+    const specificSearchMalay = await searchSpreadsheetsInDrive(accessToken, 'Inventori_2026');
+    if (specificSearchMalay.length > 0) {
+      return specificSearchMalay[0];
+    }
+
+    // 2. Second priority: Any file containing 'Inventory' or 'Inventori'
+    const inventorySearch = await searchSpreadsheetsInDrive(accessToken, 'Inventory');
+    if (inventorySearch.length > 0) {
+      return inventorySearch[0];
+    }
+
+    const inventoriSearch = await searchSpreadsheetsInDrive(accessToken, 'Inventori');
+    if (inventoriSearch.length > 0) {
+      return inventoriSearch[0];
+    }
+
+    // 3. Fallback: Search any spreadsheet
+    const allSheets = await searchSpreadsheetsInDrive(accessToken);
+    if (allSheets.length > 0) {
+      // Find one with 2026 or outdoor or billboard or inventory
+      const candidate = allSheets.find(
+        (f) =>
+          f.name.toLowerCase().includes('inventory') ||
+          f.name.toLowerCase().includes('inventori') ||
+          f.name.toLowerCase().includes('2026') ||
+          f.name.toLowerCase().includes('bto') ||
+          f.name.toLowerCase().includes('billboard')
+      );
+      return candidate || allSheets[0];
+    }
+
+    return null;
+  } catch (err) {
+    console.warn('Auto-discovery of inventory sheet error:', err);
+    return null;
+  }
+}
+
+/**
  * Delete a file with explicit user confirmation
  */
 export async function deleteDriveFile(accessToken: string, fileId: string): Promise<boolean> {
